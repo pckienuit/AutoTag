@@ -1,4 +1,5 @@
 import json
+from json import JSONDecodeError
 from typing import Any
 
 import httpx
@@ -9,13 +10,43 @@ from .uit_client import uit_client
 
 
 SYSTEM_PROMPT = """
-You label CPR image-pair tasks. Return only strict JSON for the Stage 2 annotation schema.
-Use only visible evidence. Do not infer emotions, jobs, family relations, or hidden facts.
-Choose exactly one caseType: SINGLE, MULTI, RELATIONAL.
-DESC describes who the subject is in the query image. CHANGE describes what the same subject does or has in the target image.
-For RELATIONAL, pairChangeFinal must be a relation phrase between Subject 1 and Subject 2, for example "is standing next to".
-Use natural, concise English fragments, not full captions inside DESC/CHANGE.
-Select queryGroupIds from query boxes. If target group IDs match the same people, include targetGroupIds.
+You are annotating CPR image-pair tasks.
+Return only a valid JSON object that matches the Stage 2 annotation schema. Do not add markdown, commentary, or extra keys.
+
+Use only visible evidence from the images. Do not infer emotions, jobs, family relations, intent, or any hidden facts.
+Use the query image to identify the subject(s). Use the target image to describe what those subject(s) should be like in the target.
+
+Choose exactly one caseType based on the target image:
+- SINGLE: one subject with one target description.
+- MULTI: two different subjects, each with its own description and change.
+- RELATIONAL: two different subjects, where the main signal is the ordered relation between them.
+
+Follow these field rules:
+- DESC fields identify who the subject is in the query image, specific enough to distinguish the correct person or group.
+- CHANGE fields describe what that subject is doing or what visible attribute/state they have in the target image.
+- PAIR_CHANGE describes the relation from Subject 1 to Subject 2, and the order must be correct.
+- For RELATIONAL, individual subject change fields are optional and should be filled only when they are clearly visible.
+- Subject 1 and Subject 2 must be different. A subject may be a group if the query image shows them as a group.
+- Select queryGroupIds from the query image only. Include targetGroupIds only when they clearly match the same subject(s) in the target image.
+- Do not use IDs, technical terms, or overly generic labels like "the person" when the image allows a more specific description.
+- Write concise, natural English fragments, not full sentences inside DESC/CHANGE/PAIR_CHANGE.
+- If multiple people are best treated as one unit, use SINGLE.
+- If a field is not supported by visible evidence, leave it empty rather than guessing.
+- When choosing DESC details, prioritize visible uniqueness in this order: clothing -> accessories -> hair -> environment.
+- If clothing evidence is sparse or absent, strengthen the description with accessories, then hair, then environment/background only as needed to disambiguate.
+- Prefer the most distinctive visible attributes available, so the subject can still be uniquely identified even when earlier levels in the hierarchy are weak.
+- Each DESC should include at least 3 visible distinguishing details whenever the image provides them.
+- Do not stop at a short phrase like "the man wearing a gray shirt"; expand it with more visible details, such as "the man wearing a gray shirt with white text, standing near the monument".
+- Count separate visible cues such as clothing color/type, text or pattern on clothing, accessories, hairstyle, pose, relative position, nearby object, and immediate background/environment.
+- Use simple English vocabulary, ideally below B1 level. Prefer plain, common words over advanced or academic wording.
+- Keep phrasing natural and clear, but avoid rare adjectives or complex sentence structures when a simpler phrase says the same thing.
+
+The final caption built from your fields should follow these patterns:
+- SINGLE: In the query image, Subject 1 refers to [DESC]. Retrieve target images where Subject 1 [CHANGE].
+- MULTI: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [CHANGE 1] and Subject 2 [CHANGE 2].
+- RELATIONAL: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [PAIR_CHANGE] Subject 2.
+
+Before responding, verify that the JSON is valid, the case is consistent with the target image, and the text is short, natural, and grounded in visible evidence.
 """
 
 
@@ -101,6 +132,7 @@ async def generate_annotation(
             {"role": "user", "content": content},
         ],
         "response_format": {"type": "json_object"},
+        "stream": False,
     }
     url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
     async with httpx.AsyncClient(timeout=120.0) as client:
@@ -110,15 +142,46 @@ async def generate_annotation(
             json=payload,
         )
         response.raise_for_status()
-    raw = response.json()["choices"][0]["message"]["content"]
+    raw = completion_content(response)
     data = extract_json(raw)
     annotation = coerce_annotation(data)
     annotation.captionFinal = build_caption(annotation)
     return annotation
 
 
+def completion_content(response: httpx.Response) -> str:
+    try:
+        response_data = response.json()
+    except JSONDecodeError:
+        return streamed_completion_content(response.text)
+    return str(response_data["choices"][0]["message"]["content"] or "")
+
+
+def streamed_completion_content(text: str) -> str:
+    chunks: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line.removeprefix("data:").strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except JSONDecodeError as exc:
+            raise ValueError(f"Model API returned invalid JSON event: {data[:500]}") from exc
+        for choice in event.get("choices", []):
+            delta = choice.get("delta") or {}
+            chunks.append(str(delta.get("content") or ""))
+    if not chunks:
+        raise ValueError(f"Model API returned invalid JSON: {text[:500]}")
+    return "".join(chunks)
+
+
 def extract_json(raw: str) -> dict[str, Any]:
     text = raw.strip()
+    if not text:
+        raise ValueError("Model returned an empty response body.")
     if text.startswith("```"):
         text = text.strip("`")
         if text.lower().startswith("json"):
@@ -127,6 +190,8 @@ def extract_json(raw: str) -> dict[str, Any]:
     end = text.rfind("}")
     if start >= 0 and end >= start:
         text = text[start : end + 1]
+    if not text:
+        raise ValueError("Model response did not contain JSON content.")
     return json.loads(text)
 
 
@@ -160,4 +225,3 @@ def coerce_annotation(data: dict[str, Any]) -> Stage2Annotation:
         pairChangeFinal=data.get("pairChangeFinal") or data.get("pairChangeRaw"),
         subjects=normalized_subjects,
     )
-

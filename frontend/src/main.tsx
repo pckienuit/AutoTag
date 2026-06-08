@@ -1,9 +1,9 @@
-import { Loader2, LogIn, RefreshCw, Save, Send, Settings, Sparkles } from "lucide-react";
+import { Loader2, RefreshCw, Save, Send, Sparkles } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import "./styles.css";
-import type { Box, CaseType, Session, Stage2Annotation, SubjectAnnotation, Task, TaskImage } from "./types";
+import type { Box, CaseType, Stage2Annotation, SubjectAnnotation, Task, TaskImage } from "./types";
 
 const emptySubject = (subjectId: number): SubjectAnnotation => ({
   subjectId,
@@ -114,10 +114,6 @@ function buildCaption(annotation: Stage2Annotation): string {
 }
 
 function App() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [settings, setSettings] = useState<Record<string, unknown>>({});
-  const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState("");
   const [task, setTask] = useState<Task | null>(null);
   const [annotation, setAnnotation] = useState<Stage2Annotation>(emptyAnnotation());
@@ -131,7 +127,7 @@ function App() {
   const caption = useMemo(() => buildCaption(annotation), [annotation]);
 
   useEffect(() => {
-    void api.settings().then(setSettings).catch(() => undefined);
+    void loadAutoTask();
   }, []);
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
@@ -200,6 +196,18 @@ function App() {
     }
   }
 
+  async function loadAutoTask() {
+    await run("Loading next task", async () => {
+      const data = await api.autoCurrentTask();
+      setSessionId(data.sessionId ?? "");
+      setTask(data.task);
+      setAnnotation(emptyAnnotation());
+      setIssues([]);
+      setMessage(data.task ? "Task loaded" : "No incomplete task found");
+      showToast(data.task ? "Task loaded automatically" : "No incomplete task found", data.task ? "success" : "info");
+    });
+  }
+
   return (
     <main>
       <header className="topbar">
@@ -218,23 +226,8 @@ function App() {
 
       <section className="rail">
         <div className="panel compact">
-          <h2><Settings size={18} /> AI settings</h2>
-          <input placeholder="Base URL" value={String(settings.openai_compat_base_url ?? "")} onChange={(event) => setSettings({ ...settings, openai_compat_base_url: event.target.value })} />
-          <input placeholder="Model" value={String(settings.openai_compat_model ?? "")} onChange={(event) => setSettings({ ...settings, openai_compat_model: event.target.value })} />
-          <input type="password" placeholder={settings.openai_compat_api_key ? "API key saved" : "API key"} onChange={(event) => setSettings({ ...settings, openai_compat_api_key: event.target.value })} />
-          <button onClick={() => run("Saving settings", async () => { await api.saveSettings(settings); setMessage("Settings saved"); showToast("AI settings updated successfully", "success"); })}><Save size={16} />Save</button>
-        </div>
-
-        <div className="panel compact">
-          <h2><LogIn size={18} /> UIT session</h2>
-          <input placeholder="UIT email" value={email} onChange={(event) => setEmail(event.target.value)} />
-          <input type="password" placeholder="UIT password" value={password} onChange={(event) => setPassword(event.target.value)} />
-          <button onClick={() => run("Logging in", async () => { await api.login(email, password); const data = await api.sessions(); setSessions(data.sessions as Session[]); setMessage("Logged in"); showToast("Logged in to UIT portal successfully", "success"); })}><LogIn size={16} />Login</button>
-          <select value={sessionId} onChange={(event) => setSessionId(event.target.value)}>
-            <option value="">Choose session</option>
-            {sessions.map((session) => <option value={session.id} key={session.id}>{session.name || session.poolName || session.id}</option>)}
-          </select>
-          <button disabled={!sessionId} onClick={() => run("Loading task", async () => { const data = await api.currentTask(sessionId); setTask(data.task); setAnnotation(emptyAnnotation()); setIssues([]); setMessage(data.task ? "Task loaded" : "No current task"); showToast(data.task ? "Task loaded successfully" : "No active task in this session", data.task ? "success" : "info"); })}><RefreshCw size={16} />Current task</button>
+          <h2><RefreshCw size={18} /> Auto task</h2>
+          <button onClick={loadAutoTask}><RefreshCw size={16} />Reload task</button>
         </div>
       </section>
 
@@ -266,7 +259,7 @@ function App() {
           </div>
           <button disabled={!task} onClick={() => run("Generating with AI", async () => { if (!task) return; const data = await api.generate(task, notes); setAnnotation(data.annotation); setIssues(data.issues); setMessage("AI draft ready"); showToast("AI Draft annotation generated", "success"); })}><Sparkles size={16} />Generate</button>
           <button disabled={!task} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "saved") { showToast("Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
-          <button disabled={!task} onClick={() => run("Submitting", async () => { if (!task) return; const result = await api.submit(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "submitted") { showToast("Annotation submitted successfully!", "success"); const next = await api.currentTask(sessionId); setTask(next.task); setAnnotation(emptyAnnotation()); } else { showToast("Submission blocked: please fix issues", "error"); } })}><Send size={16} />Submit & next</button>
+          <button disabled={!task} onClick={() => run("Submitting", async () => { if (!task) return; const result = await api.submit(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "submitted") { showToast("Annotation submitted successfully!", "success"); const next = await api.autoCurrentTask(); setSessionId(next.sessionId ?? ""); setTask(next.task); setAnnotation(emptyAnnotation()); } else { showToast("Submission blocked: please fix issues", "error"); } })}><Send size={16} />Submit & next</button>
         </div>
 
         <textarea className="notes" placeholder="Optional guidance for AI, e.g. focus on the child in red shirt" value={notes} onChange={(event) => setNotes(event.target.value)} />
@@ -347,7 +340,83 @@ function ImagePane({
   return (
     <div className="panel image-panel">
       <h2>{title}</h2>
-      {image?.imageUrl ? <img src={fullImageUrl(image.imageUrl)} alt={title} /> : <div className="empty">No image loaded</div>}
+      {image?.imageUrl ? (
+        <div style={{ position: "relative", display: "inline-block", maxWidth: "100%", margin: "0 auto" }}>
+          <img
+            src={fullImageUrl(image.imageUrl)}
+            alt={title}
+            style={{
+              display: "block",
+              maxWidth: "100%",
+              maxHeight: "420px",
+              width: "auto",
+              height: "auto",
+              borderRadius: "12px",
+              border: "1px solid var(--border-color)",
+              background: "#171d2c",
+            }}
+          />
+          {boxes.map((box: Box) => {
+            const id = String(box.groupUid || box.label || box.id);
+            const isActive = activeIds.has(id);
+            const isOther = otherIds.has(id);
+
+            const boxStyle: React.CSSProperties = {
+              position: "absolute",
+              left: `${(box.x ?? 0) * 100}%`,
+              top: `${(box.y ?? 0) * 100}%`,
+              width: `${(box.width ?? 0) * 100}%`,
+              height: `${(box.height ?? 0) * 100}%`,
+              border: isActive
+                ? "2px solid #14b8a6"
+                : isOther
+                ? "2px dashed #f59e0b"
+                : "1px solid rgba(255, 255, 255, 0.5)",
+              boxShadow: isActive ? "0 0 8px rgba(20, 184, 166, 0.6)" : "none",
+              backgroundColor: isActive
+                ? "rgba(20, 184, 166, 0.15)"
+                : isOther
+                ? "rgba(245, 158, 11, 0.05)"
+                : "rgba(255, 255, 255, 0.05)",
+              cursor: "pointer",
+              boxSizing: "border-box",
+              display: "flex",
+              alignItems: "flex-start",
+              justifyContent: "flex-start",
+              transition: "all 0.15s ease",
+            };
+
+            const labelStyle: React.CSSProperties = {
+              backgroundColor: isActive
+                ? "#14b8a6"
+                : isOther
+                ? "#f59e0b"
+                : "rgba(0, 0, 0, 0.6)",
+              color: isActive ? "#0c0e12" : "#ffffff",
+              fontSize: "10px",
+              fontWeight: "bold",
+              padding: "1px 4px",
+              borderRadius: "0 0 4px 0",
+              pointerEvents: "none",
+              userSelect: "none",
+              lineHeight: "1.2",
+            };
+
+            return (
+              <div
+                key={String(box.id)}
+                style={boxStyle}
+                onClick={() => onPick(id)}
+                title={`Box ${id}`}
+              >
+                <span style={labelStyle}>{id}</span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="empty">No image loaded</div>
+      )}
       <div className="box-list">
         {boxes.map((box: Box) => {
           const id = String(box.groupUid || box.label || box.id);
@@ -365,4 +434,3 @@ function ImagePane({
 }
 
 createRoot(document.getElementById("root")!).render(<App />);
-

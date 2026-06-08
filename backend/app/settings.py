@@ -7,7 +7,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 STATE_DIR = ROOT_DIR / ".autotag"
-SETTINGS_FILE = STATE_DIR / "settings.json"
 DB_FILE = STATE_DIR / "autotag.sqlite3"
 
 
@@ -27,4 +26,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-

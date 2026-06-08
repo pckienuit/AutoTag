@@ -14,19 +14,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   settings: () => request<Record<string, unknown>>("/api/settings"),
-  saveSettings: (payload: Record<string, unknown>) =>
-    request<{ status: string }>("/api/settings", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify(payload)
-    }),
-  login: (email: string, password: string) =>
-    request("/api/uit/login", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ email, password })
-    }),
+  login: () => request("/api/uit/login", { method: "POST" }),
   sessions: () => request<{ sessions: unknown[] }>("/api/uit/sessions"),
+  autoCurrentTask: () =>
+    request<{ sessionId: string | null; task: Task | null }>("/api/uit/auto-current-task"),
   currentTask: (sessionId: string) =>
     request<{ task: Task | null }>(`/api/uit/sessions/${sessionId}/current-task`),
   task: (sessionId: string, taskId: string) =>
@@ -53,4 +44,3 @@ export const api = {
     }),
   localTasks: () => request<{ tasks: unknown[] }>("/api/local/tasks")
 };
-

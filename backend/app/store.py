@@ -2,7 +2,7 @@ import json
 import sqlite3
 from typing import Any
 
-from .settings import DB_FILE, SETTINGS_FILE, STATE_DIR
+from .settings import DB_FILE, STATE_DIR
 
 
 def ensure_state() -> None:
@@ -21,18 +21,6 @@ def ensure_state() -> None:
             )
             """
         )
-
-
-def read_settings() -> dict[str, Any]:
-    ensure_state()
-    if not SETTINGS_FILE.exists():
-        return {}
-    return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-
-
-def write_settings(data: dict[str, Any]) -> None:
-    ensure_state()
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def upsert_task(
@@ -87,4 +75,3 @@ def list_tasks() -> list[dict[str, Any]]:
         }
         for row in rows
     ]
-

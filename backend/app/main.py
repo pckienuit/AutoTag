@@ -5,20 +5,19 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .ai_service import generate_annotation
 from .caption import build_caption, validate_annotation
-from .models import GenerateRequest, LoginRequest, RuntimeSettings, SyncRequest
+from .models import GenerateRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
-from .store import list_tasks, read_settings, upsert_task, write_settings
+from .store import list_tasks, upsert_task
 from .uit_client import uit_client
 
 
 def runtime_settings() -> RuntimeSettings:
     env = get_settings()
-    saved = read_settings()
     return RuntimeSettings(
-        openai_compat_base_url=saved.get("openai_compat_base_url", env.openai_compat_base_url),
-        openai_compat_api_key=saved.get("openai_compat_api_key", env.openai_compat_api_key),
-        openai_compat_model=saved.get("openai_compat_model", env.openai_compat_model),
-        auto_submit_enabled=saved.get("auto_submit_enabled", env.auto_submit_enabled),
+        openai_compat_base_url=env.openai_compat_base_url,
+        openai_compat_api_key=env.openai_compat_api_key,
+        openai_compat_model=env.openai_compat_model,
+        auto_submit_enabled=env.auto_submit_enabled,
     )
 
 
@@ -51,19 +50,10 @@ async def get_runtime_settings() -> dict[str, object]:
     return data
 
 
-@app.post("/api/settings")
-async def save_runtime_settings(settings: RuntimeSettings) -> dict[str, str]:
-    write_settings(settings.model_dump())
-    return {"status": "saved"}
-
-
 @app.post("/api/uit/login")
-async def uit_login(request: LoginRequest | None = None) -> dict[str, object]:
+async def uit_login() -> dict[str, object]:
     try:
-        result = await uit_client.login(
-            request.email if request else None,
-            request.password if request else None,
-        )
+        result = await uit_client.login()
         me = await uit_client.me()
         return {"login": result, "me": me}
     except Exception as exc:
@@ -82,6 +72,40 @@ async def uit_me() -> dict[str, object]:
 async def uit_sessions() -> dict[str, object]:
     try:
         return await uit_client.sessions()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+def session_has_open_tasks(session: dict[str, object]) -> bool:
+    available = session.get("availableTaskCount")
+    if isinstance(available, int) and available > 0:
+        return True
+    completed = session.get("completed")
+    total = session.get("total")
+    if isinstance(completed, int) and isinstance(total, int) and completed < total:
+        return True
+    return bool(session.get("draftTaskId"))
+
+
+@app.get("/api/uit/auto-current-task")
+async def uit_auto_current_task() -> dict[str, object]:
+    try:
+        data = await uit_client.sessions()
+        sessions = data.get("sessions") or []
+        candidates = [
+            session for session in sessions
+            if isinstance(session, dict) and session_has_open_tasks(session)
+        ]
+        for session in [*candidates, *[item for item in sessions if item not in candidates]]:
+            if not isinstance(session, dict) or not session.get("id"):
+                continue
+            session_id = str(session["id"])
+            task_data = await uit_client.current_task(session_id)
+            task = task_data.get("task")
+            if task:
+                upsert_task(str(task["id"]), session_id, task, status="fetched")
+                return {"session": session, "sessionId": session_id, "task": task}
+        return {"session": None, "sessionId": None, "task": None}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -201,4 +225,3 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
 @app.get("/api/local/tasks")
 async def local_tasks() -> dict[str, object]:
     return {"tasks": list_tasks()}
-
