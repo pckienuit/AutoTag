@@ -8,7 +8,7 @@ from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
 from .models import AutomationStartRequest, GenerateRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
-from .store import list_review_tasks, list_tasks, upsert_task
+from .store import list_review_tasks, list_tasks, upsert_review_task, upsert_task
 from .uit_client import uit_client
 
 
@@ -210,14 +210,28 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
             request.sessionId,
         )
         task = {**request.task, **(result.get("task") or {})}
+        reviewed = request.reviewed
         upsert_task(
             str(request.task["id"]),
             request.sessionId,
             task,
             annotation.model_dump(),
-            status="saved",
-            needs_review=True,
+            status="reviewed" if reviewed else "saved",
+            needs_review=not reviewed,
+            reviewed=reviewed,
         )
+        if reviewed and request.sessionId:
+            upsert_review_task(
+                str(request.task["id"]),
+                request.sessionId,
+                task,
+                "reviewed",
+                annotation.model_dump(),
+                annotation.captionFinal or "",
+                issues,
+                submit_result=result,
+                reviewed=True,
+            )
         return {
             "status": "saved",
             "result": result,
@@ -250,6 +264,7 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
             annotation.model_dump(),
             status="submitted",
             needs_review=True,
+            reviewed=False,
         )
         return {"status": "submitted", "result": result}
     except Exception as exc:

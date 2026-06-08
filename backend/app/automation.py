@@ -132,16 +132,25 @@ class AutomationRunner:
                 return False
             result = await uit_client.submit(task, annotation.model_dump(), 0, session_id)
             self.state.submitted += 1
-            upsert_task(task_id, session_id, result.get("task") or task, annotation.model_dump(), "submitted", True)
+            upsert_task(
+                task_id,
+                session_id,
+                result.get("task") or task,
+                annotation.model_dump(),
+                "not_reviewed",
+                True,
+                False,
+            )
             upsert_review_task(
                 task_id,
                 session_id,
                 task,
-                "submitted",
+                "not_reviewed",
                 annotation.model_dump(),
                 annotation.captionFinal or "",
                 [],
                 submit_result=result,
+                reviewed=False,
             )
             return True
         except Exception as exc:

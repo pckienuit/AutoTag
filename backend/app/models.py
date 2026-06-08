@@ -61,6 +61,7 @@ class SyncRequest(BaseModel):
     annotation: Stage2Annotation
     timeSpent: int = 0
     sessionId: str | None = None
+    reviewed: bool = False
 
 
 class TaskEnvelope(BaseModel):

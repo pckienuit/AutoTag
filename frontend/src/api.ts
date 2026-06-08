@@ -39,11 +39,11 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ task, notes })
     }),
-  save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0) =>
+  save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0, reviewed = false) =>
     request<{ status: string; issues?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
       method: "POST",
       headers: jsonHeaders,
-      body: JSON.stringify({ sessionId, task, annotation, timeSpent })
+      body: JSON.stringify({ sessionId, task, annotation, timeSpent, reviewed })
     }),
   submit: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0) =>
     request<{ status: string; issues?: string[] }>("/api/uit/submit", {

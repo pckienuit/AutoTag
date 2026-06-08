@@ -88,7 +88,8 @@ export interface ReviewTask {
   task: Task;
   annotation: Stage2Annotation | null;
   caption: string;
-  status: "submitted" | "failed" | "needs_review" | string;
+  status: "not_reviewed" | "reviewed" | "submitted" | "failed" | "needs_review" | string;
+  reviewed: boolean;
   issues: string[];
   error: string | null;
   submissionsUrl: string;

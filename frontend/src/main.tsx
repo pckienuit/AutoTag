@@ -358,7 +358,7 @@ function App() {
           </div>
           <div className="editor-actions">
             <button disabled={!task} onClick={() => run("Generating with AI", async () => { if (!task) return; const data = await api.generate(task, notes); setAnnotation(data.annotation); setIssues(data.issues); setMessage("AI draft ready"); showToast("AI Draft annotation generated", "success"); })}><Sparkles size={16} />Generate</button>
-            <button disabled={!task || !isReviewTask} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }); if (result.task) setTask(result.task); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "saved") { showToast("Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
+            <button disabled={!task || !isReviewTask} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }, 0, true); if (result.task) setTask(result.task); setIssues(result.issues ?? []); setMessage(result.status); await loadReviewTasks(); if (result.status === "saved") { showToast("Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
             <button disabled={!task || !isManualTask} onClick={() => run("Submitting", async () => { if (!task) return; const result = await api.submit(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "submitted") { showToast("Annotation submitted successfully!", "success"); const next = await api.autoCurrentTask(); setSessionId(next.sessionId ?? ""); setTask(next.task); setActiveTaskMode("manual"); setAnnotation(emptyAnnotation()); } else { showToast("Submission blocked: please fix issues", "error"); } })}><Send size={16} />Submit & next</button>
           </div>
         </div>
@@ -418,6 +418,8 @@ function App() {
           <h2>Review queue</h2>
           <select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}>
             <option value="all">All</option>
+            <option value="not_reviewed">Not reviewed</option>
+            <option value="reviewed">Reviewed</option>
             <option value="submitted">Submitted</option>
             <option value="needs_review">Needs review</option>
             <option value="failed">Failed</option>

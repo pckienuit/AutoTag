@@ -17,6 +17,7 @@ def ensure_state() -> None:
                 annotation TEXT,
                 status TEXT NOT NULL DEFAULT 'local',
                 needs_review INTEGER NOT NULL DEFAULT 1,
+                reviewed INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -33,12 +34,21 @@ def ensure_state() -> None:
                 issues TEXT NOT NULL DEFAULT '[]',
                 error TEXT,
                 submit_result TEXT,
+                reviewed INTEGER NOT NULL DEFAULT 0,
                 submissions_url TEXT NOT NULL,
                 work_url TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
+        _ensure_column(conn, "tasks", "reviewed", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "review_tasks", "reviewed", "INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def upsert_task(
@@ -48,19 +58,21 @@ def upsert_task(
     annotation: dict[str, Any] | None = None,
     status: str = "local",
     needs_review: bool = True,
+    reviewed: bool = False,
 ) -> None:
     ensure_state()
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             """
-            INSERT INTO tasks(task_id, session_id, payload, annotation, status, needs_review)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO tasks(task_id, session_id, payload, annotation, status, needs_review, reviewed)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 payload = excluded.payload,
                 annotation = COALESCE(excluded.annotation, tasks.annotation),
                 status = excluded.status,
                 needs_review = excluded.needs_review,
+                reviewed = excluded.reviewed,
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
@@ -70,6 +82,7 @@ def upsert_task(
                 json.dumps(annotation) if annotation is not None else None,
                 status,
                 1 if needs_review else 0,
+                1 if reviewed else 0,
             ),
         )
 
@@ -84,6 +97,7 @@ def upsert_review_task(
     issues: list[str] | None = None,
     error: str | None = None,
     submit_result: dict[str, Any] | None = None,
+    reviewed: bool = False,
 ) -> None:
     ensure_state()
     submissions_url = f"https://aiclub.uit.edu.vn/label_cpr/annotator/sessions/{session_id}/submissions"
@@ -93,9 +107,9 @@ def upsert_review_task(
             """
             INSERT INTO review_tasks(
                 task_id, session_id, payload, annotation, caption, status, issues,
-                error, submit_result, submissions_url, work_url
+                error, submit_result, reviewed, submissions_url, work_url
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(task_id) DO UPDATE SET
                 session_id = excluded.session_id,
                 payload = excluded.payload,
@@ -105,6 +119,7 @@ def upsert_review_task(
                 issues = excluded.issues,
                 error = excluded.error,
                 submit_result = excluded.submit_result,
+                reviewed = excluded.reviewed,
                 submissions_url = excluded.submissions_url,
                 work_url = excluded.work_url,
                 updated_at = CURRENT_TIMESTAMP
@@ -119,6 +134,7 @@ def upsert_review_task(
                 json.dumps(issues or []),
                 error,
                 json.dumps(submit_result) if submit_result is not None else None,
+                1 if reviewed else 0,
                 submissions_url,
                 work_url,
             ),
@@ -140,6 +156,7 @@ def list_tasks() -> list[dict[str, Any]]:
             "annotation": json.loads(row["annotation"]) if row["annotation"] else None,
             "status": row["status"],
             "needsReview": bool(row["needs_review"]),
+            "reviewed": bool(row["reviewed"]),
             "updatedAt": row["updated_at"],
         }
         for row in rows
@@ -162,6 +179,7 @@ def list_review_tasks(limit: int = 500) -> list[dict[str, Any]]:
             "annotation": json.loads(row["annotation"]) if row["annotation"] else None,
             "caption": row["caption"],
             "status": row["status"],
+            "reviewed": bool(row["reviewed"]),
             "issues": json.loads(row["issues"]),
             "error": row["error"],
             "submitResult": json.loads(row["submit_result"]) if row["submit_result"] else None,
