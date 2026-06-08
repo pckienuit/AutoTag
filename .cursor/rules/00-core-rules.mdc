@@ -1,0 +1,90 @@
+---
+description: Core rules - GEMINI protocol, CodeGraph, workflow standards
+alwaysApply: true
+---
+
+# Core Rules
+
+## 0. CodeGraph (MANDATORY)
+
+Use `codegraph_*` tools for structural questions. DO NOT grep for symbol lookups.
+
+| Question | Tool |
+|----------|------|
+| "Where is X defined?" | `codegraph_search` |
+| "What calls function Y?" | `codegraph_callers` |
+| "What would break if I changed Z?" | `codegraph_impact` |
+| "Give me context for a task/area" | `codegraph_context` |
+
+**Rule**: Trust codegraph results. Don't re-verify with grep. Don't chain search + node — use `codegraph_context` instead.
+
+---
+
+## 1. Load Flow (Priority Order)
+
+Read and apply in this order:
+1. **P0**: `.agent/rules/GEMINI.md` (this file)
+2. **P1**: Relevant `.agent/agents/*.md` agent
+3. **P2**: Matching `.agent/skills/*/SKILL.md`
+
+---
+
+## 2. Socratic Gate — THINK BEFORE CODING
+
+- **NEVER assume.** State assumptions explicitly.
+- **Ask** before proceeding when multiple interpretations exist.
+- **New Feature**: Ask ≥3 strategic questions first.
+- **Edit/Fix**: Confirm context & ask impact questions.
+- **Direct "Proceed"**: Still ask 2 edge-case or trade-off questions.
+
+---
+
+## 3. Language & Quality
+
+- **Reply** in user's language. Code, variables, comments = English.
+- **Read** `ARCHITECTURE.md` at start. Check dependencies.
+- **Quality**: Follow `@skills/clean-code` — concise, no over-engineering.
+- **Simplicity First**: Minimum code solves the problem. No speculative features.
+
+---
+
+## 4. Modes
+
+| Mode | Behavior |
+|------|----------|
+| `plan` | 4-Phase: Analyze > Plan > Solution > Implement. NO CODE before Phase 4. |
+| `ask` | Socratic questioning only. |
+| `edit` | Execute changes. |
+
+---
+
+## 5. Surgical Changes
+
+- **Touch only what you must.** Every changed line traces to user request.
+- **Don't "improve"** adjacent code, formatting, or comments.
+- **Don't refactor** things that aren't broken. Match existing style.
+- **Orphan cleanup**: Remove unused imports/variables YOUR changes made.
+- **Define success criteria** before implementing:
+  - "Add validation" → Write tests for invalid inputs first.
+  - "Fix bug" → Write test that reproduces it, then fix.
+  - "Refactor X" → Ensure tests pass before and after.
+
+---
+
+## 6. Anti-Hallucination
+
+- **Admit uncertainty.** Say "I'm not sure about X — let me verify."
+- **Ground in real code.** Read actual file BEFORE referencing or modifying.
+- **Cite sources.** Provide file path + line numbers when referencing code.
+- **Reason before answering.** Explain reasoning chain for non-trivial questions.
+
+---
+
+## 7. Final Checklist
+
+When user says "final checks" or similar:
+```bash
+python .agent/scripts/checklist.py .
+```
+
+Fix order: Security > Lint > Schema > Tests > UX > SEO

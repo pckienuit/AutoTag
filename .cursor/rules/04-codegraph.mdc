@@ -1,0 +1,67 @@
+---
+description: CodeGraph MCP usage rules - structural queries
+alwaysApply: true
+---
+
+# CodeGraph Rules
+
+## When to Use CodeGraph
+
+| Question | Tool |
+|----------|------|
+| "Where is X defined?" / Find symbol | `codegraph_search` |
+| "What calls function Y?" | `codegraph_callers` |
+| "What does Y call?" | `codegraph_callees` |
+| "What would break if I changed Z?" | `codegraph_impact` |
+| "Show me Y's signature/source" | `codegraph_node` |
+| "Give me context for task/area" | `codegraph_context` |
+| "See several related symbols" | `codegraph_explore` |
+| "What files exist under path/?" | `codegraph_files` |
+| "Is index healthy?" | `codegraph_status` |
+
+---
+
+## Golden Rules
+
+### 1. Answer Directly
+
+For "how does X work" / architecture / trace questions:
+1. Call `codegraph_context` first
+2. ONE `codegraph_explore` for symbol sources
+
+**DO NOT** spawn separate file-reading sub-tasks — codegraph IS the pre-built index.
+
+### 2. Trust Results
+
+CodeGraph results come from full AST parse. **Do NOT re-verify with grep.**
+
+- Grep is slower, less accurate, wastes context.
+- Re-verification repeats work codegraph already did.
+
+### 3. Don't Grep for Symbol Lookups
+
+❌ `grep -r "functionName"` → then find definition
+✅ `codegraph_search("functionName")` → immediate result with kind + location + signature
+
+### 4. Don't Chain Calls
+
+❌ `codegraph_search` + `codegraph_node` for context
+✅ `codegraph_context` — one call returns same result
+
+### 5. Don't Loop for Multiple Symbols
+
+❌ Multiple `codegraph_node` calls (each re-reads context)
+✅ ONE `codegraph_explore` call returns all grouped
+
+---
+
+## Index Lag
+
+The file watcher debounces ~500ms behind writes. **Don't re-query immediately after editing** in the same turn.
+
+---
+
+## If Index Not Ready
+
+The MCP server may return "not initialized." If so, ask user:
+> "I notice this project doesn't have CodeGraph initialized. Want me to run `codegraph init -i` to build the index?"

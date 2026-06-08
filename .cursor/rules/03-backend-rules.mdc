@@ -1,0 +1,140 @@
+---
+description: Backend specialist rules - API, security, database
+globs: **/*.{ts,js,py,go,java}
+alwaysApply: false
+---
+
+# Backend Rules
+
+## Philosophy
+
+**Backend is not just CRUD — it's system architecture.** Every endpoint decision affects security, scalability, and maintainability.
+
+---
+
+## CLARIFY BEFORE CODING
+
+**⛔ DO NOT assume. ASK FIRST when unspecified:**
+
+| Aspect | Ask |
+|--------|-----|
+| Runtime | "Node.js or Python? Edge-ready (Hono/Bun)?" |
+| Framework | "Hono/Fastify/Express? FastAPI/Django?" |
+| Database | "PostgreSQL/SQLite? Serverless (Neon/Turso)?" |
+| API Style | "REST/GraphQL/tRPC?" |
+| Auth | "JWT/Session? OAuth needed? Role-based?" |
+| Deployment | "Edge/Serverless/Container/VPS?" |
+
+---
+
+## Development Decision Process
+
+### Phase 1: Requirements Analysis
+- **Data**: What data flows in/out?
+- **Scale**: What are scale requirements?
+- **Security**: What security level needed?
+- **Deployment**: What's target environment?
+
+**→ If unclear, ASK USER**
+
+### Phase 2: Tech Stack
+Apply decision frameworks (see below)
+
+### Phase 3: Architecture
+- Layered structure? (Controller → Service → Repository)
+- Error handling approach?
+- Auth/authz strategy?
+
+### Phase 4: Execute
+Build layer by layer: models → services → endpoints → validation
+
+### Phase 5: Verification
+Security → Performance → Tests → Documentation
+
+---
+
+## Framework Selection (2025)
+
+| Scenario | Node.js | Python |
+|----------|---------|--------|
+| Edge/Serverless | Hono | - |
+| High Performance | Fastify | FastAPI |
+| Full-stack/Legacy | Express | Django |
+| Rapid Prototyping | Hono | FastAPI |
+
+## Database Selection
+
+| Scenario | Recommendation |
+|----------|---------------|
+| Full PG features | Neon (serverless PG) |
+| Edge, low latency | Turso (edge SQLite) |
+| AI/Embeddings | PostgreSQL + pgvector |
+| Simple/Local | SQLite |
+| Complex relationships | PostgreSQL |
+
+---
+
+## API Development
+
+### ✅ DO
+
+| Rule | Implementation |
+|------|----------------|
+| Validate ALL input | At API boundary |
+| Parameterized queries | Never string concatenation |
+| Centralized errors | Consistent error format |
+| HTTPS everywhere | Security first |
+| Rate limiting | Protect endpoints |
+
+### ❌ DON'T
+
+| Rule | Why |
+|------|-----|
+| Trust user input | Validate everything |
+| Expose internal errors | Return safe messages only |
+| Hardcode secrets | Use env vars |
+| Giant controllers | Split into services |
+
+---
+
+## Security Rules
+
+| ✅ DO | ❌ DON'T |
+|-------|----------|
+| Hash passwords (bcrypt/argon2) | Store plain text |
+| Verify JWT signature | Trust JWT without verify |
+| Check authorization every route | Skip auth checks |
+| Use HTTPS everywhere | HTTP in production |
+| Implement CORS properly | Allow all origins |
+
+---
+
+## Architecture
+
+- **Layered architecture**: Controller → Service → Repository
+- **Dependency injection** for testability
+- **Centralized error handling**
+- **Appropriate logging** (no sensitive data)
+
+---
+
+## Quality Control Loop
+
+After editing any file:
+1. `npm run lint && npx tsc --noEmit`
+2. Security check: No hardcoded secrets, input validated
+3. Type check: No TypeScript/type errors
+4. Test: Critical paths have coverage
+
+---
+
+## Anti-Patterns
+
+| ❌ Don't | ✅ Do |
+|---------|-------|
+| SQL Injection | Parameterized queries, ORM |
+| N+1 Queries | JOINs, DataLoader, includes |
+| Blocking Event Loop | Async for I/O |
+| Express for Edge | Hono/Fastify |
+| Skipping auth check | Verify every protected route |
+| Hardcoded secrets | Environment variables |

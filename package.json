@@ -1,0 +1,13 @@
+{
+  "scripts": {
+    "dev": "concurrently \"uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000\" \"npm --prefix frontend run dev\"",
+    "backend": "uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000",
+    "frontend": "npm --prefix frontend run dev",
+    "test": "pytest backend/tests",
+    "build": "npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
+

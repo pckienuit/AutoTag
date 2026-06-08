@@ -1,0 +1,111 @@
+---
+description: TypeScript and JavaScript coding standards
+globs: **/*.{ts,tsx,js,jsx}
+alwaysApply: false
+---
+
+# TypeScript Standards
+
+## Type Rules
+
+| Rule | Enforcement |
+|------|-------------|
+| **Strict mode** | No `any` — use `unknown` if truly unknown |
+| **Generics** | Use for reusable typed components |
+| **Inference** | Let TS infer when possible, explicit when needed |
+| **Utility Types** | Partial, Pick, Omit, Record, Awaited |
+
+---
+
+## Error Handling
+
+```typescript
+// ❌ BAD
+try {
+  await fetchData();
+} catch (e) {}
+
+// ✅ GOOD
+try {
+  await fetchData();
+} catch (e) {
+  logger.error('Failed to fetch', { error: e });
+  throw new DataFetchError('Unable to retrieve data', { cause: e });
+}
+```
+
+---
+
+## React Patterns
+
+### Component Structure
+
+```typescript
+// ✅ GOOD - Functional component with typed props
+interface Props {
+  userId: string;
+  onSuccess?: () => void;
+}
+
+export function UserProfile({ userId, onSuccess }: Props) {
+  const { data, isLoading } = useUser(userId);
+
+  if (isLoading) return <Skeleton />;
+  if (!data) return <NotFound />;
+
+  return <div>{data.name}</div>;
+}
+```
+
+### Hook Usage
+
+```typescript
+// ✅ Extract reusable logic into custom hooks
+// ✅ Use useCallback for callbacks passed to children
+// ✅ Use useMemo for expensive computations
+// ✅ Use React.memo for pure components (only after profiling)
+```
+
+---
+
+## Import Order
+
+1. React / Framework imports
+2. Third-party libraries
+3. Internal imports (absolute paths)
+4. Relative imports
+5. Type imports
+
+```typescript
+import { useState } from 'react';
+import { useRouter } from 'next/router';
+import { Button } from '@/components/ui';
+import { User } from './types';
+import type { Config } from './config';
+```
+
+---
+
+## Naming Conventions
+
+| Element | Convention | Example |
+|---------|------------|---------|
+| Components | PascalCase | `UserProfile` |
+| Hooks | camelCase + use | `useUserData` |
+| Utilities | camelCase | `formatDate` |
+| Constants | SCREAMING_SNAKE | `MAX_RETRIES` |
+| Types/Interfaces | PascalCase | `UserProps` |
+| Files (components) | PascalCase | `UserProfile.tsx` |
+| Files (hooks/utilities) | camelCase | `useUserData.ts` |
+
+---
+
+## Anti-Patterns
+
+| ❌ Don't | ✅ Do |
+|---------|-------|
+| `any` | `unknown` or specific types |
+| Non-null assertion `!` | Proper null checks |
+| `as` casting | Type guards |
+| Inline object types | Interfaces/Types |
+| Default exports | Named exports |

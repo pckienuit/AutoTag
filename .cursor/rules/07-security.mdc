@@ -1,0 +1,107 @@
+---
+description: Security rules - validation, authentication, common vulnerabilities
+alwaysApply: true
+---
+
+# Security Rules
+
+## Input Validation
+
+**NEVER trust user input.** Validate everything at the API boundary.
+
+| ✅ DO | ❌ DON'T |
+|-------|----------|
+| Validate all inputs | Trust request data |
+| Sanitize output | Render raw HTML |
+| Use parameterized queries | String concatenation for SQL |
+| Type-check all values | Assume correct types |
+
+---
+
+## Authentication & Authorization
+
+### Authentication
+
+| ✅ DO | ❌ DON'T |
+|-------|----------|
+| Hash passwords (bcrypt/argon2) | Store plain text |
+| Verify JWT signature | Trust unsigned JWTs |
+| Use short JWT expiry + refresh | Long-lived tokens |
+| Implement rate limiting | Unlimited attempts |
+| Use HTTPS everywhere | HTTP in production |
+
+### Authorization
+
+```typescript
+// ❌ BAD - Skip authorization
+app.get('/api/admin', (req, res) => {
+  res.json({ secret: 'data' });
+});
+
+// ✅ GOOD - Check role every route
+app.get('/api/admin', requireAuth, requireRole('admin'), (req, res) => {
+  res.json({ secret: 'data' });
+});
+```
+
+---
+
+## Secrets Management
+
+| ✅ DO | ❌ DON'T |
+|-------|----------|
+| Use environment variables | Hardcode secrets |
+| Use secret managers (Vault, AWS Secrets) | Commit .env files |
+| Rotate secrets regularly | Use same key forever |
+| Validate env vars at startup | Ignore missing config |
+
+---
+
+## Common Vulnerabilities
+
+### SQL Injection
+
+```typescript
+// ❌ BAD
+const query = `SELECT * FROM users WHERE id = ${userId}`;
+
+// ✅ GOOD
+const query = 'SELECT * FROM users WHERE id = $1';
+await db.query(query, [userId]);
+```
+
+### XSS Prevention
+
+```typescript
+// ❌ BAD - Render raw HTML
+dangerouslySetInnerHTML={{ __html: userInput }};
+
+// ✅ GOOD - Escape output
+<div>{userInput}</div>
+```
+
+### Command Injection
+
+```typescript
+// ❌ BAD
+exec(`rm -rf ${userPath}`);
+
+// ✅ GOOD - Validate and sanitize
+if (!isValidPath(userPath)) throw new Error('Invalid path');
+exec('rm -rf ' + sanitize(userPath));
+```
+
+---
+
+## OWASP Top 10 Awareness
+
+1. **Broken Access Control** — Verify every protected route
+2. **Cryptographic Failures** — Use modern crypto, not MD5/SHA1
+3. **Injection** — Parameterized queries, input validation
+4. **Insecure Design** — Threat model early
+5. **Security Misconfiguration** — Hard defaults, minimal surface
+6. **Vulnerable Components** — Keep dependencies updated
+7. **Auth Failures** — Proper session management
+8. **Data Integrity Failures** — Verify CI/CD integrity
+9. **Logging Failures** — Log security events, alert on anomalies
+10. **SSRF** — Validate URLs, block internal IPs

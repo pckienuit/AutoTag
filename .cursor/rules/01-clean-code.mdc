@@ -1,0 +1,88 @@
+---
+description: Clean code standards - concise, direct, pragmatic
+alwaysApply: true
+---
+
+# Clean Code Standards
+
+## Core Principles
+
+| Principle | Rule |
+|-----------|------|
+| **SRP** | Single Responsibility — each function/class does ONE thing |
+| **DRY** | Don't Repeat Yourself — extract duplicates, reuse |
+| **KISS** | Keep It Simple — simplest solution that works |
+| **YAGNI** | You Aren't Gonna Need It — don't build unused features |
+| **Boy Scout** | Leave code cleaner than you found it |
+
+---
+
+## Naming Rules
+
+| Element | Convention |
+|---------|------------|
+| Variables | Reveal intent: `userCount` not `n` |
+| Functions | Verb + noun: `getUserById()` |
+| Booleans | Question form: `isActive`, `hasPermission` |
+| Constants | SCREAMING_SNAKE: `MAX_RETRY_COUNT` |
+
+**Rule**: If you need a comment to explain a name, rename it.
+
+---
+
+## Function Rules
+
+| Rule | Limit |
+|------|-------|
+| Size | Max 20 lines, ideally 5-10 |
+| Arguments | Max 3, prefer 0-2 |
+| Side Effects | Don't mutate inputs unexpectedly |
+
+---
+
+## Before Editing ANY File
+
+Ask yourself:
+1. **What imports this file?** They might break.
+2. **What does this file import?** Interface changes.
+3. **What tests cover this?** Tests might fail.
+4. **Is this shared?** Multiple places affected.
+
+**Rule**: Edit the file + ALL dependent files in the SAME task. Never leave broken imports.
+
+---
+
+## Anti-Patterns
+
+| DON'T | DO |
+|-------|-----|
+| Comment every line | Delete obvious comments |
+| Helper for one-liner | Inline the code |
+| Factory for 2 objects | Direct instantiation |
+| utils.ts with 1 function | Put code where used |
+| Deep nesting | Guard clauses |
+| Magic numbers | Named constants |
+| God functions | Split by responsibility |
+
+---
+
+## AI Coding Style
+
+| Situation | Action |
+|-----------|--------|
+| User asks for feature | Write it directly |
+| User reports bug | Fix it, don't explain first |
+| No clear requirement | Ask, don't assume |
+
+---
+
+## Self-Check Before Completing
+
+| Check | Question |
+|-------|----------|
+| Goal met? | Did I do exactly what user asked? |
+| Files edited? | All necessary files modified? |
+| Code works? | Change verified? |
+| No errors? | Lint and TypeScript pass? |
+
+**Rule**: If ANY check fails, fix before completing.

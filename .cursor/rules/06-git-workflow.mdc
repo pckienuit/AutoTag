@@ -1,0 +1,105 @@
+---
+description: Git workflow conventions - commits, branches, messages
+alwaysApply: true
+---
+
+# Git Workflow Rules
+
+## Commit Message Format
+
+```
+<type>(<scope>): <subject>
+
+[optional body]
+
+[optional footer]
+```
+
+### Types
+
+| Type | Description |
+|------|-------------|
+| `feat` | New feature |
+| `fix` | Bug fix |
+| `docs` | Documentation only |
+| `style` | Formatting, no code change |
+| `refactor` | Code restructuring |
+| `perf` | Performance improvement |
+| `test` | Adding/updating tests |
+| `chore` | Maintenance tasks |
+
+### Examples
+
+```
+feat(auth): add JWT refresh token support
+fix(api): handle null response in user endpoint
+docs(readme): update installation instructions
+refactor(components): extract shared Button component
+```
+
+---
+
+## Branch Naming
+
+| Type | Format | Example |
+|------|--------|---------|
+| Feature | `feature/<ticket>-description` | `feature/ABC-123-user-auth` |
+| Bugfix | `fix/<ticket>-description` | `fix/ABC-456-login-error` |
+| Hotfix | `hotfix/<description>` | `hotfix/critical-security-patch` |
+| Chore | `chore/<description>` | `chore/update-deps` |
+
+---
+
+## Workflow
+
+### Before Starting Work
+
+```bash
+# Ensure main is up to date
+git checkout main
+git pull origin main
+
+# Create feature branch
+git checkout -b feature/ABC-123-my-feature
+```
+
+### During Work
+
+```bash
+# Stage changes incrementally
+git add src/components/Button.tsx
+git commit -m "feat(ui): add Button component"
+
+# Keep commits atomic - one logical change per commit
+```
+
+### Before Submitting
+
+```bash
+# Rebase on latest main
+git fetch origin main
+git rebase origin/main
+
+# Resolve conflicts, then force push
+git push --force-with-lease origin feature/ABC-123-my-feature
+```
+
+---
+
+## Safety Rules
+
+| ✅ DO | ❌ DON'T |
+|-------|----------|
+| `git push --force-with-lease` | `git push --force` |
+| Rebase on main | Merge main into feature |
+| Atomic commits | "WIP" commits |
+| Descriptive messages | "Fixed stuff" / "Updates" |
+| Review before push | Push directly to main |
+
+---
+
+## Commit Frequency
+
+- **Early and often**: Commit when a logical unit is complete
+- **Never push broken code**: Ensure code compiles before committing
+- **Clean as you go**: Don't let mess accumulate across commits

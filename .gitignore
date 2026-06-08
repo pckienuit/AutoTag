@@ -1,0 +1,12 @@
+.autotag/
+.env
+.env.*
+!.env.example
+__pycache__/
+.pytest_cache/
+.venv/
+node_modules/
+dist/
+build/
+*.pyc
+

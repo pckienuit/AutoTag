@@ -1,0 +1,138 @@
+---
+description: Frontend specialist rules - UI/UX, React, Tailwind
+globs: **/*.{tsx,ts,jsx,js,css,scss}
+alwaysApply: false
+---
+
+# Frontend Rules
+
+## Design Philosophy
+
+**Frontend is not just UI — it's system design.** Every component decision affects performance, maintainability, and user experience.
+
+---
+
+## BEFORE ANY DESIGN WORK
+
+### 1. Deep Design Thinking (MANDATORY)
+
+**⛔ DO NOT start designing until you complete this analysis:**
+
+1. **Context Analysis**:
+   - What sector? What emotions should it evoke?
+   - Who is target audience? Age, tech-savviness, expectations?
+   - What do competitors look like? What should I NOT do?
+
+2. **Design Identity**:
+   - What will make this design UNFORGETTABLE?
+   - How do I avoid standard layouts?
+
+3. **Modern Cliché Scan** (STRICTLY FORBIDDEN):
+   - ❌ Bento Grids (default landing page layout)
+   - ❌ Mesh/Aurora Gradients
+   - ❌ Glassmorphism (AI favorite)
+   - ❌ Deep Cyan / Fintech Blue
+   - ❌ Generic copy: "Orchestrate", "Empower", "Elevate", "Seamless"
+
+---
+
+## 🚫 THE MODERN SaaS "SAFE HARBOR" (FORBIDDEN)
+
+1. **"Standard Hero Split"** (Left Content / Right Image) — FORBIDDEN as default
+2. **Bento Grids** — Use only for truly complex data
+3. **Mesh Gradients** — Avoid floating colored blobs
+4. **Glassmorphism** — Blur + thin border is an AI cliché
+5. **Purple/Violet/Indigo** — FORBIDDEN unless explicitly requested
+6. **"Safe" Blue/Teal** — Try risky colors: Red, Black, Neon Green
+
+---
+
+## Design Commitment (REQUIRED)
+
+Present this BEFORE code:
+
+```markdown
+🎨 DESIGN COMMITMENT: [RADICAL STYLE NAME]
+
+- Topological Choice: (How did I betray the 'Standard Split'?)
+- Risk Factor: (What unconventional decision did I take?)
+- Cliché Liquidation: (Which 'Safe Harbor' elements did I kill?)
+```
+
+---
+
+## Layout Diversification
+
+Break the "Split Screen" habit. Use alternatives:
+- **Massive Typographic Hero**: Center headline 300px+, visual behind/inside letters
+- **Experimental Center-Staggered**: Every element different alignment (L-R-C-L)
+- **Layered Depth (Z-axis)**: Overlapping elements, partial unreadability
+- **Vertical Narrative**: No "above the fold" hero
+- **Extreme Asymmetry (90/10)**: Compress to one extreme edge
+
+---
+
+## Component Design
+
+### Decision Framework
+
+1. **Is this reusable or one-off?**
+   - One-off → Keep co-located with usage
+   - Reusable → Extract to components directory
+
+2. **Does state belong here?**
+   - Component-specific? → Local state (useState)
+   - Shared across tree? → Lift or use Context
+   - Server data? → React Query / TanStack Query
+
+3. **Will this cause re-renders?**
+   - Static content? → Server Component
+   - Client interactivity? → Client Component with React.memo if needed
+
+4. **Is this accessible?**
+   - Keyboard navigation works?
+   - Screen reader announces correctly?
+   - Focus management handled?
+
+---
+
+## State Management Hierarchy
+
+1. **Server State** → React Query / TanStack Query
+2. **URL State** → searchParams
+3. **Global State** → Zustand (rarely needed)
+4. **Context** → Shared but not global
+5. **Local State** → Default choice
+
+---
+
+## Performance Rules
+
+| Rule | Action |
+|------|--------|
+| Measure first | Profile before optimizing |
+| Server by default | Use Server Components (Next.js) |
+| Memoize after measuring | React.memo, useMemo, useCallback |
+| Optimize images | next/image with WebP/AVIF |
+
+---
+
+## Quality Control Loop
+
+After editing any file:
+1. `npm run lint && npx tsc --noEmit`
+2. Fix all errors — TypeScript and linting must pass
+3. Verify functionality works
+4. Report complete only after quality checks pass
+
+---
+
+## Anti-Patterns
+
+| ❌ Don't | ✅ Do |
+|---------|-------|
+| Prop Drilling | Context or composition |
+| Giant Components | Split by responsibility |
+| Premature Abstraction | Wait for reuse pattern |
+| Client by Default | Server Components when possible |
+| `any` Type | Proper typing or `unknown` |

@@ -1,0 +1,204 @@
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+from .ai_service import generate_annotation
+from .caption import build_caption, validate_annotation
+from .models import GenerateRequest, LoginRequest, RuntimeSettings, SyncRequest
+from .settings import get_settings
+from .store import list_tasks, read_settings, upsert_task, write_settings
+from .uit_client import uit_client
+
+
+def runtime_settings() -> RuntimeSettings:
+    env = get_settings()
+    saved = read_settings()
+    return RuntimeSettings(
+        openai_compat_base_url=saved.get("openai_compat_base_url", env.openai_compat_base_url),
+        openai_compat_api_key=saved.get("openai_compat_api_key", env.openai_compat_api_key),
+        openai_compat_model=saved.get("openai_compat_model", env.openai_compat_model),
+        auto_submit_enabled=saved.get("auto_submit_enabled", env.auto_submit_enabled),
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await uit_client.close()
+
+
+app = FastAPI(title="AutoTag CPR Assistant", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/api/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/api/settings")
+async def get_runtime_settings() -> dict[str, object]:
+    settings = runtime_settings()
+    data = settings.model_dump()
+    data["openai_compat_api_key"] = bool(settings.openai_compat_api_key)
+    return data
+
+
+@app.post("/api/settings")
+async def save_runtime_settings(settings: RuntimeSettings) -> dict[str, str]:
+    write_settings(settings.model_dump())
+    return {"status": "saved"}
+
+
+@app.post("/api/uit/login")
+async def uit_login(request: LoginRequest | None = None) -> dict[str, object]:
+    try:
+        result = await uit_client.login(
+            request.email if request else None,
+            request.password if request else None,
+        )
+        me = await uit_client.me()
+        return {"login": result, "me": me}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/uit/me")
+async def uit_me() -> dict[str, object]:
+    try:
+        return {"me": await uit_client.me()}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/uit/sessions")
+async def uit_sessions() -> dict[str, object]:
+    try:
+        return await uit_client.sessions()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/uit/sessions/{session_id}/current-task")
+async def uit_current_task(session_id: str) -> dict[str, object]:
+    try:
+        data = await uit_client.current_task(session_id)
+        task = data.get("task")
+        if task:
+            upsert_task(str(task["id"]), session_id, task, status="fetched")
+        return data
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/uit/sessions/{session_id}/submissions")
+async def uit_submissions(session_id: str, sent: bool = False) -> dict[str, object]:
+    try:
+        return await uit_client.submissions(session_id, sent=sent)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.get("/api/uit/sessions/{session_id}/tasks/{task_id}")
+async def uit_task(session_id: str, task_id: str) -> dict[str, object]:
+    try:
+        data = await uit_client.task(task_id, session_id)
+        task = data.get("task")
+        if task:
+            upsert_task(str(task["id"]), session_id, task, status="fetched")
+        return data
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/ai/generate")
+async def ai_generate(request: GenerateRequest) -> dict[str, object]:
+    try:
+        annotation = await generate_annotation(request.task, runtime_settings(), request.notes)
+        issues = validate_annotation(annotation)
+        upsert_task(
+            str(request.task["id"]),
+            None,
+            request.task,
+            annotation.model_dump(),
+            status="generated",
+            needs_review=True,
+        )
+        return {
+            "annotation": annotation.model_dump(),
+            "caption": build_caption(annotation),
+            "issues": issues,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/uit/save")
+async def save_annotation(request: SyncRequest) -> dict[str, object]:
+    annotation = request.annotation
+    annotation.captionFinal = build_caption(annotation)
+    issues = validate_annotation(annotation)
+    try:
+        result = await uit_client.save(
+            request.task,
+            annotation.model_dump(),
+            request.timeSpent,
+            request.sessionId,
+        )
+        task = result.get("task") or request.task
+        upsert_task(
+            str(request.task["id"]),
+            request.sessionId,
+            task,
+            annotation.model_dump(),
+            status="saved",
+            needs_review=True,
+        )
+        return {
+            "status": "saved",
+            "result": result,
+            "caption": annotation.captionFinal,
+            "issues": issues,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/uit/submit")
+async def submit_annotation(request: SyncRequest) -> dict[str, object]:
+    annotation = request.annotation
+    annotation.captionFinal = build_caption(annotation)
+    issues = validate_annotation(annotation)
+    if issues:
+        return {"status": "blocked", "issues": issues}
+    try:
+        result = await uit_client.submit(
+            request.task,
+            annotation.model_dump(),
+            request.timeSpent,
+            request.sessionId,
+        )
+        upsert_task(
+            str(request.task["id"]),
+            request.sessionId,
+            result.get("task") or request.task,
+            annotation.model_dump(),
+            status="submitted",
+            needs_review=True,
+        )
+        return {"status": "submitted", "result": result}
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/local/tasks")
+async def local_tasks() -> dict[str, object]:
+    return {"tasks": list_tasks()}
+

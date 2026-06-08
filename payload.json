@@ -1,0 +1,59 @@
+{
+  "task": {
+    "id": "cmpybiwhw20lf01s2p6986mek",
+    "orderIndex": 9,
+    "content": "train__1023628_46944005__1023628_46943658",
+    "status": "ASSIGNED",
+    "isFlagged": false,
+    "canEdit": true,
+    "images": [
+      {
+        "side": "QUERY",
+        "imageUrl": "/label_cpr/data/local-files/?d=Amazing/Datasets/PIPA/images/train/1023628_46944005.jpg",
+        "boxes": [
+          {
+            "id": "1023628_46944005::pid270",
+            "x": 0.474609375,
+            "y": 0.2734375,
+            "width": 0.1123046875,
+            "height": 0.2265625,
+            "label": "270",
+            "groupUid": "270",
+            "rawLabel": "270"
+          }
+        ]
+      },
+      {
+        "side": "TARGET",
+        "imageUrl": "/label_cpr/data/local-files/?d=Amazing/Datasets/PIPA/images/train/1023628_46943658.jpg",
+        "boxes": [
+          {
+            "id": "1023628_46943658::pid270",
+            "x": 0.19010416666666666,
+            "y": 0.0498046875,
+            "width": 0.203125,
+            "height": 0.2099609375,
+            "label": "270",
+            "groupUid": "270",
+            "rawLabel": "270"
+          }
+        ]
+      }
+    ],
+    "blocks": {
+      "content": "train__1023628_46944005__1023628_46943658",
+      "pair_id": "train__1023628_46944005__1023628_46943658"
+    },
+    "caption": null,
+    "timeSpentSec": 0,
+    "lastSavedAt": null,
+    "claimToken": "cmq3xa0pr06n501s7dbs3ebpu",
+    "reservationVersion": 0,
+    "draftVersion": 0,
+    "discussionThreadId": null,
+    "discussionStatus": null,
+    "annotatorUnreadCount": 0,
+    "discussionLastMessageAt": null
+  },
+  "notes": ""
+}
