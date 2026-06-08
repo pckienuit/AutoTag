@@ -1,4 +1,4 @@
-import type { Stage2Annotation, Task } from "./types";
+import type { AutomationMode, AutomationStatus, ReviewTask, Stage2Annotation, Task } from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
@@ -24,6 +24,15 @@ export const api = {
     request<{ task: Task }>(`/api/uit/sessions/${sessionId}/tasks/${taskId}`),
   submissions: (sessionId: string, sent = false) =>
     request<{ submissions: unknown[] }>(`/api/uit/sessions/${sessionId}/submissions?sent=${sent}`),
+  startAutomation: (mode: AutomationMode, limit: number | null) =>
+    request<AutomationStatus>("/api/automation/start", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ mode, limit })
+    }),
+  stopAutomation: () => request<AutomationStatus>("/api/automation/stop", { method: "POST" }),
+  automationStatus: () => request<AutomationStatus>("/api/automation/status"),
+  reviewTasks: () => request<{ tasks: ReviewTask[] }>("/api/review/tasks"),
   generate: (task: Task, notes: string) =>
     request<{ annotation: Stage2Annotation; caption: string; issues: string[] }>("/api/ai/generate", {
       method: "POST",
@@ -31,7 +40,7 @@ export const api = {
       body: JSON.stringify({ task, notes })
     }),
   save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0) =>
-    request<{ status: string; issues?: string[]; caption?: string }>("/api/uit/save", {
+    request<{ status: string; issues?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ sessionId, task, annotation, timeSpent })

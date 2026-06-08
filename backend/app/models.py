@@ -13,6 +13,14 @@ class RuntimeSettings(BaseModel):
     auto_submit_enabled: bool = False
 
 
+AutomationMode = Literal["all_open", "one_session", "fixed_limit", "current_task"]
+
+
+class AutomationStartRequest(BaseModel):
+    mode: AutomationMode = "all_open"
+    limit: int | None = None
+
+
 class LoginRequest(BaseModel):
     email: str
     password: str
@@ -64,4 +72,3 @@ class ImageAsset(BaseModel):
     side: str
     imageUrl: str | None = None
     boxes: list[dict[str, Any]] = Field(default_factory=list)
-

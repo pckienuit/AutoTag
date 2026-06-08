@@ -1,9 +1,19 @@
-import { Loader2, RefreshCw, Save, Send, Sparkles } from "lucide-react";
+import { Bot, Loader2, RefreshCw, Save, Send, Sparkles, Square } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import "./styles.css";
-import type { Box, CaseType, Stage2Annotation, SubjectAnnotation, Task, TaskImage } from "./types";
+import type {
+  AutomationMode,
+  AutomationStatus,
+  Box,
+  CaseType,
+  ReviewTask,
+  Stage2Annotation,
+  SubjectAnnotation,
+  Task,
+  TaskImage
+} from "./types";
 
 const emptySubject = (subjectId: number): SubjectAnnotation => ({
   subjectId,
@@ -116,9 +126,15 @@ function buildCaption(annotation: Stage2Annotation): string {
 function App() {
   const [sessionId, setSessionId] = useState("");
   const [task, setTask] = useState<Task | null>(null);
+  const [activeTaskMode, setActiveTaskMode] = useState<"manual" | "review">("manual");
   const [annotation, setAnnotation] = useState<Stage2Annotation>(emptyAnnotation());
   const [notes, setNotes] = useState("");
   const [issues, setIssues] = useState<string[]>([]);
+  const [automationMode, setAutomationMode] = useState<AutomationMode>("all_open");
+  const [automationLimit, setAutomationLimit] = useState(10);
+  const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
+  const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
+  const [reviewFilter, setReviewFilter] = useState("all");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
   const [activeSubjectId, setActiveSubjectId] = useState<number>(1);
@@ -128,7 +144,18 @@ function App() {
 
   useEffect(() => {
     void loadAutoTask();
+    void refreshAutomationStatus();
+    void loadReviewTasks();
   }, []);
+
+  useEffect(() => {
+    if (!automationStatus?.running) return;
+    const timer = setInterval(() => {
+      void refreshAutomationStatus();
+      void loadReviewTasks();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [automationStatus?.running]);
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
     setToast({ message: msg, type });
@@ -201,12 +228,62 @@ function App() {
       const data = await api.autoCurrentTask();
       setSessionId(data.sessionId ?? "");
       setTask(data.task);
+      setActiveTaskMode("manual");
       setAnnotation(emptyAnnotation());
       setIssues([]);
       setMessage(data.task ? "Task loaded" : "No incomplete task found");
       showToast(data.task ? "Task loaded automatically" : "No incomplete task found", data.task ? "success" : "info");
     });
   }
+
+  async function refreshAutomationStatus() {
+    const status = await api.automationStatus();
+    setAutomationStatus(status);
+  }
+
+  async function loadReviewTasks() {
+    const data = await api.reviewTasks();
+    setReviewTasks(data.tasks);
+  }
+
+  async function startAutomation() {
+    await run("Starting automation", async () => {
+      const limit = automationMode === "fixed_limit" ? automationLimit : null;
+      const status = await api.startAutomation(automationMode, limit);
+      setAutomationStatus(status);
+      setMessage("Automation started");
+      showToast("Automation started", "success");
+    });
+  }
+
+  async function stopAutomation() {
+    await run("Stopping automation", async () => {
+      const status = await api.stopAutomation();
+      setAutomationStatus(status);
+      await loadReviewTasks();
+      showToast("Automation stop requested", "info");
+    });
+  }
+
+  async function openReviewTask(item: ReviewTask) {
+    await run(`Loading review ${item.taskId}`, async () => {
+      let reviewTask = item.task;
+      if (!reviewTask.images?.length) {
+        const data = await api.task(item.sessionId, item.taskId);
+        reviewTask = data.task;
+      }
+      setSessionId(item.sessionId);
+      setTask(reviewTask);
+      setActiveTaskMode("review");
+      setAnnotation(item.annotation ?? emptyAnnotation());
+      setIssues(item.issues ?? []);
+      setMessage(`Reviewing ${item.taskId}`);
+    });
+  }
+
+  const visibleReviewTasks = reviewTasks.filter((item) => reviewFilter === "all" || item.status === reviewFilter);
+  const isReviewTask = activeTaskMode === "review";
+  const isManualTask = activeTaskMode === "manual";
 
   return (
     <main>
@@ -228,6 +305,28 @@ function App() {
         <div className="panel compact">
           <h2><RefreshCw size={18} /> Auto task</h2>
           <button onClick={loadAutoTask}><RefreshCw size={16} />Reload task</button>
+        </div>
+        <div className="panel compact">
+          <h2><Bot size={18} /> Automation</h2>
+          <select value={automationMode} onChange={(event) => setAutomationMode(event.target.value as AutomationMode)}>
+            <option value="all_open">All open sessions</option>
+            <option value="one_session">One session</option>
+            <option value="fixed_limit">Fixed limit</option>
+            <option value="current_task">Current task only</option>
+          </select>
+          {automationMode === "fixed_limit" ? (
+            <input type="number" min={1} value={automationLimit} onChange={(event) => setAutomationLimit(Math.max(1, Number(event.target.value) || 1))} />
+          ) : null}
+          <div className="automation-actions">
+            <button disabled={automationStatus?.running} onClick={startAutomation}><Bot size={16} />Start</button>
+            <button disabled={!automationStatus?.running} onClick={stopAutomation}><Square size={16} />Stop</button>
+            <button onClick={() => { void refreshAutomationStatus(); void loadReviewTasks(); }}><RefreshCw size={16} />Refresh</button>
+          </div>
+          <div className="automation-status">
+            <span>{automationStatus?.message ?? "Idle"}</span>
+            <span>Done {automationStatus?.processed ?? 0} / Submitted {automationStatus?.submitted ?? 0} / Failed {automationStatus?.failed ?? 0} / Review {automationStatus?.needs_review ?? 0}</span>
+            {automationStatus?.next_delay_seconds ? <span>Next in {automationStatus.next_delay_seconds}s</span> : null}
+          </div>
         </div>
       </section>
 
@@ -257,9 +356,11 @@ function App() {
               <button className={annotation.caseType === item ? "active" : ""} onClick={() => setCaseType(item)} key={item}>{item}</button>
             ))}
           </div>
-          <button disabled={!task} onClick={() => run("Generating with AI", async () => { if (!task) return; const data = await api.generate(task, notes); setAnnotation(data.annotation); setIssues(data.issues); setMessage("AI draft ready"); showToast("AI Draft annotation generated", "success"); })}><Sparkles size={16} />Generate</button>
-          <button disabled={!task} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "saved") { showToast("Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
-          <button disabled={!task} onClick={() => run("Submitting", async () => { if (!task) return; const result = await api.submit(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "submitted") { showToast("Annotation submitted successfully!", "success"); const next = await api.autoCurrentTask(); setSessionId(next.sessionId ?? ""); setTask(next.task); setAnnotation(emptyAnnotation()); } else { showToast("Submission blocked: please fix issues", "error"); } })}><Send size={16} />Submit & next</button>
+          <div className="editor-actions">
+            <button disabled={!task} onClick={() => run("Generating with AI", async () => { if (!task) return; const data = await api.generate(task, notes); setAnnotation(data.annotation); setIssues(data.issues); setMessage("AI draft ready"); showToast("AI Draft annotation generated", "success"); })}><Sparkles size={16} />Generate</button>
+            <button disabled={!task || !isReviewTask} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }); if (result.task) setTask(result.task); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "saved") { showToast("Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
+            <button disabled={!task || !isManualTask} onClick={() => run("Submitting", async () => { if (!task) return; const result = await api.submit(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "submitted") { showToast("Annotation submitted successfully!", "success"); const next = await api.autoCurrentTask(); setSessionId(next.sessionId ?? ""); setTask(next.task); setActiveTaskMode("manual"); setAnnotation(emptyAnnotation()); } else { showToast("Submission blocked: please fix issues", "error"); } })}><Send size={16} />Submit & next</button>
+          </div>
         </div>
 
         <textarea className="notes" placeholder="Optional guidance for AI, e.g. focus on the child in red shirt" value={notes} onChange={(event) => setNotes(event.target.value)} />
@@ -310,6 +411,30 @@ function App() {
           <p>{caption || "Fill required fields to preview the final caption."}</p>
         </div>
         {issues.length ? <ul className="issues">{issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
+      </section>
+
+      <section className="review-panel panel">
+        <div className="review-head">
+          <h2>Review queue</h2>
+          <select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}>
+            <option value="all">All</option>
+            <option value="submitted">Submitted</option>
+            <option value="needs_review">Needs review</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+        <div className="review-list">
+          {visibleReviewTasks.map((item) => (
+            <button className="review-item" onClick={() => { void openReviewTask(item); }} key={item.taskId}>
+              <strong>{item.status}</strong>
+              <span>{item.taskId}</span>
+              <small>{item.updatedAt}</small>
+              <a href={item.workUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open UIT task</a>
+              <a href={item.submissionsUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Submissions</a>
+            </button>
+          ))}
+          {!visibleReviewTasks.length ? <div className="empty review-empty">No review items yet</div> : null}
+        </div>
       </section>
     </main>
   );

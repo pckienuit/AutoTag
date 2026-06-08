@@ -4,10 +4,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .ai_service import generate_annotation
+from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
-from .models import GenerateRequest, RuntimeSettings, SyncRequest
+from .models import AutomationStartRequest, GenerateRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
-from .store import list_tasks, upsert_task
+from .store import list_review_tasks, list_tasks, upsert_task
 from .uit_client import uit_client
 
 
@@ -28,6 +29,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="AutoTag CPR Assistant", lifespan=lifespan)
+automation_runner = AutomationRunner(runtime_settings)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -142,6 +144,37 @@ async def uit_task(session_id: str, task_id: str) -> dict[str, object]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.post("/api/automation/start")
+async def automation_start(request: AutomationStartRequest) -> dict[str, object]:
+    try:
+        return automation_runner.start(request.mode, request.limit)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/automation/stop")
+async def automation_stop() -> dict[str, object]:
+    return automation_runner.stop()
+
+
+@app.get("/api/automation/status")
+async def automation_status() -> dict[str, object]:
+    return automation_runner.status()
+
+
+@app.get("/api/review/tasks")
+async def review_tasks() -> dict[str, object]:
+    return {"tasks": list_review_tasks()}
+
+
+@app.get("/api/review/submissions/{session_id}")
+async def review_submissions(session_id: str) -> dict[str, object]:
+    try:
+        return await uit_client.submissions(session_id, sent=True)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/api/ai/generate")
 async def ai_generate(request: GenerateRequest) -> dict[str, object]:
     try:
@@ -176,7 +209,7 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
             request.timeSpent,
             request.sessionId,
         )
-        task = result.get("task") or request.task
+        task = {**request.task, **(result.get("task") or {})}
         upsert_task(
             str(request.task["id"]),
             request.sessionId,
@@ -188,6 +221,7 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
         return {
             "status": "saved",
             "result": result,
+            "task": task,
             "caption": annotation.captionFinal,
             "issues": issues,
         }

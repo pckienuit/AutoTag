@@ -65,3 +65,33 @@ export interface Session {
   draftTaskId?: string;
 }
 
+export type AutomationMode = "all_open" | "one_session" | "fixed_limit" | "current_task";
+
+export interface AutomationStatus {
+  running: boolean;
+  stop_requested: boolean;
+  mode: AutomationMode | null;
+  limit: number | null;
+  processed: number;
+  submitted: number;
+  failed: number;
+  needs_review: number;
+  current_session_id: string | null;
+  current_task_id: string | null;
+  message: string;
+  next_delay_seconds: number | null;
+}
+
+export interface ReviewTask {
+  taskId: string;
+  sessionId: string;
+  task: Task;
+  annotation: Stage2Annotation | null;
+  caption: string;
+  status: "submitted" | "failed" | "needs_review" | string;
+  issues: string[];
+  error: string | null;
+  submissionsUrl: string;
+  workUrl: string;
+  updatedAt: string;
+}

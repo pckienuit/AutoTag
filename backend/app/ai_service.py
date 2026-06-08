@@ -40,6 +40,8 @@ Follow these field rules:
 - Count separate visible cues such as clothing color/type, text or pattern on clothing, accessories, hairstyle, pose, relative position, nearby object, and immediate background/environment.
 - Use simple English vocabulary, ideally below B1 level. Prefer plain, common words over advanced or academic wording.
 - Keep phrasing natural and clear, but avoid rare adjectives or complex sentence structures when a simpler phrase says the same thing.
+- Vary the wording a little when the images allow it, so similar tasks do not always produce the exact same phrasing.
+- Prefer human-like, direct descriptions grounded in the image over rigid template-heavy wording, while still keeping the final caption valid and easy to read.
 
 The final caption built from your fields should follow these patterns:
 - SINGLE: In the query image, Subject 1 refers to [DESC]. Retrieve target images where Subject 1 [CHANGE].

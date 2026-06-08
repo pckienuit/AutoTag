@@ -207,6 +207,20 @@ button:disabled {
   margin-bottom: 4px;
 }
 
+.automation-actions {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.automation-status {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 /* Workspace Images styling */
 .workspace {
   display: grid;
@@ -293,12 +307,19 @@ button:disabled {
 
 .editor-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
   border-bottom: 1px solid var(--border-color);
   padding-bottom: 16px;
+}
+
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-left: auto;
 }
 
 .segmented {
@@ -454,6 +475,74 @@ button:disabled {
 
 .issues li:last-child {
   margin-bottom: 0;
+}
+
+.review-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.review-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.review-head h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.review-head select {
+  max-width: 220px;
+}
+
+.review-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.review-item {
+  justify-content: flex-start;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 116px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  text-align: left;
+}
+
+.review-item:hover {
+  background: rgba(28, 35, 51, 0.95);
+}
+
+.review-item strong {
+  color: var(--primary-hover);
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.review-item span {
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.review-item small {
+  color: var(--text-muted);
+}
+
+.review-item a {
+  color: #93c5fd;
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.review-empty {
+  min-height: 120px;
 }
 
 /* Toast Notifications */
