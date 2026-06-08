@@ -202,7 +202,44 @@ def completion_content(response: httpx.Response) -> str:
         response_data = response.json()
     except JSONDecodeError:
         return streamed_completion_content(response.text)
-    return str(response_data["choices"][0]["message"]["content"] or "")
+    if not isinstance(response_data, dict):
+        raise ValueError(f"Model API returned unexpected JSON: {str(response_data)[:500]}")
+    if response_data.get("error"):
+        raise ValueError(f"Model API returned an error: {str(response_data['error'])[:500]}")
+
+    choices = response_data.get("choices")
+    if isinstance(choices, list) and choices:
+        return choice_content(choices[0])
+
+    choice = response_data.get("choice")
+    if isinstance(choice, dict):
+        return choice_content(choice)
+
+    for key in ("content", "text", "output_text", "response"):
+        value = response_data.get(key)
+        if isinstance(value, str):
+            return value
+
+    raise ValueError(
+        "Model API response did not include choices/message content. "
+        f"Response keys: {', '.join(response_data.keys())}. Body: {str(response_data)[:500]}"
+    )
+
+
+def choice_content(choice: dict[str, Any]) -> str:
+    message = choice.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, list):
+            return "".join(str(item.get("text") or "") if isinstance(item, dict) else str(item) for item in content)
+        return str(content or "")
+    if isinstance(choice.get("delta"), dict):
+        return str(choice["delta"].get("content") or "")
+    if isinstance(choice.get("text"), str):
+        return str(choice["text"])
+    if isinstance(choice.get("content"), str):
+        return str(choice["content"])
+    raise ValueError(f"Model API choice did not include message content: {str(choice)[:500]}")
 
 
 def streamed_completion_content(text: str) -> str:
