@@ -185,12 +185,17 @@ function App() {
 
   useEffect(() => {
     if (!automationStatus?.running) return;
-    const timer = setInterval(() => {
+    const statusTimer = setInterval(() => {
       void refreshAutomationStatus();
+    }, automationStatus.next_delay_seconds ? 1000 : 5000);
+    const reviewTimer = setInterval(() => {
       void loadReviewTasks();
     }, 5000);
-    return () => clearInterval(timer);
-  }, [automationStatus?.running]);
+    return () => {
+      clearInterval(statusTimer);
+      clearInterval(reviewTimer);
+    };
+  }, [automationStatus?.running, automationStatus?.next_delay_seconds]);
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
     setToast({ message: msg, type });

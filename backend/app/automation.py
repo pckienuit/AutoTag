@@ -162,7 +162,8 @@ class AutomationRunner:
 
     async def _sleep_between_submissions(self) -> None:
         delay = random.randint(DELAY_MIN_SECONDS, DELAY_MAX_SECONDS)
-        self.state.next_delay_seconds = delay
-        self.state.message = f"Waiting {delay} seconds before next task"
-        await asyncio.sleep(delay)
+        for remaining in range(delay, 0, -1):
+            self.state.next_delay_seconds = remaining
+            self.state.message = f"Waiting {remaining} seconds before next task"
+            await asyncio.sleep(1)
         self.state.next_delay_seconds = None
