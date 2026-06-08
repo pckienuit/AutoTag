@@ -126,25 +126,17 @@ async def generate_annotation(
             content.append({"type": "text", "text": label})
             content.append({"type": "image_url", "image_url": {"url": data_url}})
 
-    payload = {
-        "model": settings.openai_compat_model,
-        "temperature": 0.1,
-        "messages": [
+    payload = chat_payload(
+        settings.openai_compat_model,
+        temperature=0.1,
+        messages=[
             {"role": "system", "content": SYSTEM_PROMPT.strip()},
             {"role": "user", "content": content},
         ],
-        "response_format": {"type": "json_object"},
-        "stream": False,
-    }
+        json_object=True,
+    )
     url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        response = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {settings.openai_compat_api_key}"},
-            json=payload,
-        )
-        response.raise_for_status()
-    raw = completion_content(response)
+    raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
     data = extract_json(raw)
     annotation = coerce_annotation(data)
     annotation.captionFinal = build_caption(annotation)
@@ -174,27 +166,82 @@ Rules:
 User text:
 {source}
 """.strip()
-    payload = {
-        "model": settings.openai_compat_model,
-        "temperature": 0.1,
-        "messages": [
+    payload = chat_payload(
+        settings.openai_compat_model,
+        temperature=0.1,
+        messages=[
             {"role": "system", "content": SYSTEM_PROMPT.strip()},
             {"role": "user", "content": prompt},
         ],
-        "stream": False,
-    }
+    )
     url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {settings.openai_compat_api_key}"},
-            json=payload,
-        )
-        response.raise_for_status()
-    fixed = completion_content(response).strip()
+    fixed = (await request_completion(url, settings.openai_compat_api_key, payload, 60.0)).strip()
     if fixed.startswith("```"):
         fixed = fixed.strip("`").strip()
     return fixed.strip().strip('"').strip("'").strip()
+
+
+def chat_payload(
+    model: str,
+    *,
+    temperature: float,
+    messages: list[dict[str, Any]],
+    json_object: bool = False,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "temperature": temperature,
+        "messages": messages,
+        "stream": False,
+        "max_tokens": 4096 if json_object else 512,
+    }
+    if "gemini" in model.lower():
+        payload["max_completion_tokens"] = payload["max_tokens"]
+    if json_object and "gemini" not in model.lower():
+        payload["response_format"] = {"type": "json_object"}
+    return payload
+
+
+async def request_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> str:
+    response = await post_completion(url, api_key, payload, timeout)
+    try:
+        return completion_content(response)
+    except ValueError as exc:
+        if "no text output" not in str(exc):
+            raise
+        retry_payload = retry_chat_payload(payload)
+        retry_response = await post_completion(url, api_key, retry_payload, timeout)
+        return completion_content(retry_response)
+
+
+async def post_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+        return response
+
+
+def retry_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    retry_payload = {**payload}
+    max_tokens = int(retry_payload.get("max_tokens") or 4096)
+    retry_payload["max_tokens"] = max(max_tokens, 8192)
+    if "gemini" in str(retry_payload.get("model", "")).lower():
+        retry_payload["max_completion_tokens"] = retry_payload["max_tokens"]
+    messages = retry_payload.get("messages")
+    if isinstance(messages, list) and len(messages) >= 2 and messages[0].get("role") == "system":
+        system_text = str(messages[0].get("content") or "")
+        user_message = {**messages[1]}
+        user_content = user_message.get("content")
+        if isinstance(user_content, list):
+            user_message["content"] = [{"type": "text", "text": system_text}, *user_content]
+        elif isinstance(user_content, str):
+            user_message["content"] = f"{system_text}\n\n{user_content}"
+        retry_payload["messages"] = [user_message, *messages[2:]]
+    return retry_payload
 
 
 def completion_content(response: httpx.Response) -> str:
@@ -219,6 +266,16 @@ def completion_content(response: httpx.Response) -> str:
         value = response_data.get(key)
         if isinstance(value, str):
             return value
+        if isinstance(value, dict):
+            nested = nested_response_content(value)
+            if nested:
+                return nested
+            if key == "response":
+                usage = value.get("usageMetadata")
+                raise ValueError(
+                    "Model API returned no text output in response. "
+                    f"Usage metadata: {usage}. Body: {str(response_data)[:500]}"
+                )
 
     raise ValueError(
         "Model API response did not include choices/message content. "
@@ -240,6 +297,27 @@ def choice_content(choice: dict[str, Any]) -> str:
     if isinstance(choice.get("content"), str):
         return str(choice["content"])
     raise ValueError(f"Model API choice did not include message content: {str(choice)[:500]}")
+
+
+def nested_response_content(response_data: dict[str, Any]) -> str:
+    candidates = response_data.get("candidates")
+    if isinstance(candidates, list) and candidates:
+        candidate = candidates[0]
+        if isinstance(candidate, dict):
+            content = candidate.get("content")
+            if isinstance(content, dict):
+                parts = content.get("parts")
+                if isinstance(parts, list):
+                    return "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
+                if isinstance(content.get("text"), str):
+                    return str(content["text"])
+            if isinstance(candidate.get("text"), str):
+                return str(candidate["text"])
+    for key in ("text", "outputText", "output_text"):
+        value = response_data.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
 
 
 def streamed_completion_content(text: str) -> str:

@@ -1,10 +1,12 @@
 import base64
+import io
 import mimetypes
 import time
 from typing import Any
 from urllib.parse import urljoin
 
 import httpx
+from PIL import Image
 
 from .settings import get_settings
 
@@ -126,7 +128,7 @@ class UitClient:
         payload = self._mutation_payload(task, annotation, time_spent)
         return await self.post_json(path, payload)
 
-    async def image_as_data_url(self, image_url: str) -> str:
+    async def image_as_data_url(self, image_url: str, max_side: int = 512, quality: int = 60) -> str:
         await self.ensure_login()
         absolute_url = urljoin(self.base_url, image_url)
         response = await self.client.get(absolute_url)
@@ -138,13 +140,26 @@ class UitClient:
             raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
         response.raise_for_status()
         content_type = response.headers.get("content-type")
+        image_bytes = response.content
+        if content_type and content_type.startswith("image/"):
+            image_bytes = self._compress_image(response.content, max_side, quality)
+            content_type = "image/jpeg"
         if not content_type:
             content_type = mimetypes.guess_type(absolute_url)[0] or "image/jpeg"
-        encoded = base64.b64encode(response.content).decode("ascii")
+        encoded = base64.b64encode(image_bytes).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
 
     def absolute_url(self, image_url: str | None) -> str | None:
         return urljoin(self.base_url, image_url) if image_url else None
+
+    @staticmethod
+    def _compress_image(content: bytes, max_side: int, quality: int) -> bytes:
+        with Image.open(io.BytesIO(content)) as image:
+            image = image.convert("RGB")
+            image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+            output = io.BytesIO()
+            image.save(output, format="JPEG", quality=quality, optimize=True)
+            return output.getvalue()
 
     @staticmethod
     def _mutation_payload(
