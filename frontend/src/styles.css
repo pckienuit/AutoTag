@@ -356,6 +356,27 @@ button:disabled {
   min-height: 48px;
 }
 
+.fix-field {
+  display: grid;
+  gap: 6px;
+}
+
+.fix-field button {
+  justify-self: end;
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid rgba(20, 184, 166, 0.35);
+  background: rgba(20, 184, 166, 0.12);
+  color: var(--primary-hover);
+}
+
+.fix-field button:hover:not(:disabled) {
+  background: rgba(20, 184, 166, 0.2);
+  box-shadow: none;
+  transform: none;
+}
+
 /* Subject Grid */
 .subjects {
   display: grid;

@@ -140,6 +140,21 @@ function mergeReviewTasks(current: ReviewTask[], incoming: ReviewTask[]): Review
   });
 }
 
+function syncGroupIds(ids: string[]): Pick<SubjectAnnotation, "queryGroupIds" | "targetGroupIds"> {
+  const uniqueIds = [...new Set(ids)];
+  return { queryGroupIds: uniqueIds, targetGroupIds: uniqueIds };
+}
+
+function toggleSyncedGroupId(subject: SubjectAnnotation, boxId: string): Pick<SubjectAnnotation, "queryGroupIds" | "targetGroupIds"> {
+  const currentIds = new Set([...subject.queryGroupIds, ...subject.targetGroupIds]);
+  if (currentIds.has(boxId)) {
+    currentIds.delete(boxId);
+  } else {
+    currentIds.add(boxId);
+  }
+  return syncGroupIds([...currentIds]);
+}
+
 function App() {
   const [sessionId, setSessionId] = useState("");
   const [task, setTask] = useState<Task | null>(null);
@@ -193,17 +208,12 @@ function App() {
     }));
   }
 
-  function handleBoxPick(subjectId: number, type: "QUERY" | "TARGET", boxId: string) {
+  function handleBoxPick(subjectId: number, _type: "QUERY" | "TARGET", boxId: string) {
     setAnnotation((current) => ({
       ...current,
       subjects: current.subjects.map((subject) => {
         if (subject.subjectId !== subjectId) return subject;
-        const field = type === "QUERY" ? "queryGroupIds" : "targetGroupIds";
-        const currentIds = subject[field] || [];
-        const nextIds = currentIds.includes(boxId)
-          ? currentIds.filter((id) => id !== boxId)
-          : [...currentIds, boxId];
-        return { ...subject, [field]: nextIds };
+        return { ...subject, ...toggleSyncedGroupId(subject, boxId) };
       })
     }));
   }
@@ -346,6 +356,14 @@ function App() {
     });
   }
 
+  async function fixManualText(value: string, field: string, apply: (text: string) => void) {
+    await run(`Fixing ${field} with AI`, async () => {
+      const data = await api.fixText(value, field);
+      apply(data.text);
+      showToast("Text fixed with AI", "success");
+    });
+  }
+
   function reviewDraftFor(item: ReviewTask): Stage2Annotation {
     return reviewDrafts[item.taskId] ?? item.annotation ?? emptyAnnotation();
   }
@@ -484,15 +502,21 @@ function App() {
                 <div onClick={(e) => e.stopPropagation()} style={{ display: "grid", gap: "8px", marginTop: "8px" }}>
                   <div>
                     <label style={{ fontSize: "12px", color: "#666" }}>Query group IDs (Click boxes in Query Image)</label>
-                    <input placeholder="e.g. 193" value={subject.queryGroupIds.join(", ")} onChange={(event) => updateSubject(subject.subjectId, { queryGroupIds: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
+                    <input placeholder="e.g. 193" value={subject.queryGroupIds.join(", ")} onChange={(event) => updateSubject(subject.subjectId, syncGroupIds(splitIds(event.target.value)))} />
                   </div>
                   <div>
                     <label style={{ fontSize: "12px", color: "#666" }}>Target group IDs (Click boxes in Target Image)</label>
-                    <input placeholder="e.g. 193" value={subject.targetGroupIds.join(", ")} onChange={(event) => updateSubject(subject.subjectId, { targetGroupIds: event.target.value.split(",").map((item) => item.trim()).filter(Boolean) })} />
+                    <input placeholder="e.g. 193" value={subject.targetGroupIds.join(", ")} onChange={(event) => updateSubject(subject.subjectId, syncGroupIds(splitIds(event.target.value)))} />
                   </div>
-                  <textarea placeholder="DESC in query image" value={subject.descQueryFinal} onChange={(event) => updateSubject(subject.subjectId, { descQueryRaw: event.target.value, descQueryFinal: event.target.value })} />
+                  <div className="fix-field">
+                    <textarea placeholder="DESC in query image" value={subject.descQueryFinal} onChange={(event) => updateSubject(subject.subjectId, { descQueryRaw: event.target.value, descQueryFinal: event.target.value })} />
+                    <button type="button" disabled={!subject.descQueryFinal.trim() || busy} onClick={() => { void fixManualText(subject.descQueryFinal, "DESC", (text) => updateSubject(subject.subjectId, { descQueryRaw: text, descQueryFinal: text })); }}><Sparkles size={14} />Fix with AI</button>
+                  </div>
                   {annotation.caseType !== "RELATIONAL" || subject.subjectId === 1 && annotation.relationalSubject1ChangeEnabled || subject.subjectId === 2 && annotation.relationalSubject2ChangeEnabled ? (
-                    <textarea placeholder="CHANGE in target image" value={subject.changeTargetFinal} onChange={(event) => updateSubject(subject.subjectId, { changeTargetRaw: event.target.value, changeTargetFinal: event.target.value })} />
+                    <div className="fix-field">
+                      <textarea placeholder="CHANGE in target image" value={subject.changeTargetFinal} onChange={(event) => updateSubject(subject.subjectId, { changeTargetRaw: event.target.value, changeTargetFinal: event.target.value })} />
+                      <button type="button" disabled={!subject.changeTargetFinal.trim() || busy} onClick={() => { void fixManualText(subject.changeTargetFinal, "CHANGE", (text) => updateSubject(subject.subjectId, { changeTargetRaw: text, changeTargetFinal: text })); }}><Sparkles size={14} />Fix with AI</button>
+                    </div>
                   ) : null}
                 </div>
               </div>
@@ -502,7 +526,10 @@ function App() {
 
         {annotation.caseType === "RELATIONAL" ? (
           <div className="relation">
-            <input placeholder="PAIR_CHANGE, e.g. is standing behind" value={annotation.pairChangeFinal ?? ""} onChange={(event) => setAnnotation({ ...annotation, pairChangeRaw: event.target.value, pairChangeFinal: event.target.value })} />
+            <div className="fix-field">
+              <input placeholder="PAIR_CHANGE, e.g. is standing behind" value={annotation.pairChangeFinal ?? ""} onChange={(event) => setAnnotation({ ...annotation, pairChangeRaw: event.target.value, pairChangeFinal: event.target.value })} />
+              <button type="button" disabled={!(annotation.pairChangeFinal ?? "").trim() || busy} onClick={() => { void fixManualText(annotation.pairChangeFinal ?? "", "PAIR_CHANGE", (text) => setAnnotation({ ...annotation, pairChangeRaw: text, pairChangeFinal: text })); }}><Sparkles size={14} />Fix with AI</button>
+            </div>
             <label><input type="checkbox" checked={annotation.relationalSubject1ChangeEnabled} onChange={(event) => setAnnotation({ ...annotation, relationalSubject1ChangeEnabled: event.target.checked })} /> Subject 1 extra CHANGE</label>
             <label><input type="checkbox" checked={annotation.relationalSubject2ChangeEnabled} onChange={(event) => setAnnotation({ ...annotation, relationalSubject2ChangeEnabled: event.target.checked })} /> Subject 2 extra CHANGE</label>
           </div>
@@ -592,17 +619,12 @@ function ReviewQuickCard({
     }));
   }
 
-  function toggleReviewBox(subjectId: number, type: "QUERY" | "TARGET", boxId: string) {
+  function toggleReviewBox(subjectId: number, _type: "QUERY" | "TARGET", boxId: string) {
     onChange((current) => ({
       ...current,
       subjects: current.subjects.map((subject) => {
         if (subject.subjectId !== subjectId) return subject;
-        const field = type === "QUERY" ? "queryGroupIds" : "targetGroupIds";
-        const currentIds = subject[field] || [];
-        const nextIds = currentIds.includes(boxId)
-          ? currentIds.filter((id) => id !== boxId)
-          : [...currentIds, boxId];
-        return { ...subject, [field]: nextIds };
+        return { ...subject, ...toggleSyncedGroupId(subject, boxId) };
       })
     }));
   }
@@ -666,12 +688,12 @@ function ReviewQuickCard({
               <input
                 placeholder="Query group IDs"
                 value={subject.queryGroupIds.join(", ")}
-                onChange={(event) => updateReviewSubject(subject.subjectId, { queryGroupIds: splitIds(event.target.value) })}
+                onChange={(event) => updateReviewSubject(subject.subjectId, syncGroupIds(splitIds(event.target.value)))}
               />
               <input
                 placeholder="Target group IDs"
                 value={subject.targetGroupIds.join(", ")}
-                onChange={(event) => updateReviewSubject(subject.subjectId, { targetGroupIds: splitIds(event.target.value) })}
+                onChange={(event) => updateReviewSubject(subject.subjectId, syncGroupIds(splitIds(event.target.value)))}
               />
               <textarea
                 placeholder="DESC in query image"

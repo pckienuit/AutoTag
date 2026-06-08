@@ -4,10 +4,10 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from .ai_service import generate_annotation
+from .ai_service import fix_annotation_text, generate_annotation
 from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
-from .models import AutomationStartRequest, GenerateRequest, RuntimeSettings, SyncRequest
+from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
 from .store import list_review_tasks, list_tasks, upsert_review_task, upsert_task
 from .uit_client import uit_client
@@ -194,6 +194,14 @@ async def ai_generate(request: GenerateRequest) -> dict[str, object]:
             "caption": build_caption(annotation),
             "issues": issues,
         }
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/ai/fix-text")
+async def ai_fix_text(request: FixTextRequest) -> dict[str, object]:
+    try:
+        return {"text": await fix_annotation_text(request.text, request.field, runtime_settings())}
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 

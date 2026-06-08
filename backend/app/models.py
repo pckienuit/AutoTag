@@ -56,6 +56,11 @@ class GenerateRequest(BaseModel):
     notes: str = ""
 
 
+class FixTextRequest(BaseModel):
+    text: str
+    field: str = "annotation"
+
+
 class SyncRequest(BaseModel):
     task: dict[str, Any]
     annotation: Stage2Annotation

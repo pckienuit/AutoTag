@@ -151,6 +151,52 @@ async def generate_annotation(
     return annotation
 
 
+async def fix_annotation_text(text: str, field: str, settings: RuntimeSettings) -> str:
+    if not settings.openai_compat_api_key:
+        raise ValueError("OpenAI-compatible API key is missing.")
+    source = text.strip()
+    if not source:
+        return ""
+    field_name = field.strip() or "annotation"
+    prompt = f"""
+Rewrite the user's intent as one concise natural English fragment for CPR annotation field: {field_name}.
+
+Rules:
+- Translate to English if needed.
+- Keep only the meaning the user provided. Do not add new visible details.
+- Follow the CPR annotation system rules: simple B1-level English, natural, concise, image-grounded wording.
+- Return a fragment, not a full sentence.
+- Do not add markdown, quotes, labels, JSON, or commentary.
+- For DESC, describe who the subject is in the query image.
+- For CHANGE, describe the visible target action, attribute, state, or condition.
+- For PAIR_CHANGE, describe the ordered relation from Subject 1 to Subject 2.
+
+User text:
+{source}
+""".strip()
+    payload = {
+        "model": settings.openai_compat_model,
+        "temperature": 0.1,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT.strip()},
+            {"role": "user", "content": prompt},
+        ],
+        "stream": False,
+    }
+    url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {settings.openai_compat_api_key}"},
+            json=payload,
+        )
+        response.raise_for_status()
+    fixed = completion_content(response).strip()
+    if fixed.startswith("```"):
+        fixed = fixed.strip("`").strip()
+    return fixed.strip().strip('"').strip("'").strip()
+
+
 def completion_content(response: httpx.Response) -> str:
     try:
         response_data = response.json()

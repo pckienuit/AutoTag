@@ -39,6 +39,12 @@ export const api = {
       headers: jsonHeaders,
       body: JSON.stringify({ task, notes })
     }),
+  fixText: (text: string, field: string) =>
+    request<{ text: string }>("/api/ai/fix-text", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ text, field })
+    }),
   save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0, reviewed = false) =>
     request<{ status: string; issues?: string[]; warnings?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
       method: "POST",
