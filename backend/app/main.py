@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -202,15 +203,35 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
     annotation = request.annotation
     annotation.captionFinal = build_caption(annotation)
     issues = validate_annotation(annotation)
+    reviewed = request.reviewed
+    task = request.task
+    result: dict[str, object] = {}
+    warnings: list[str] = []
     try:
-        result = await uit_client.save(
-            request.task,
-            annotation.model_dump(),
-            request.timeSpent,
-            request.sessionId,
-        )
-        task = {**request.task, **(result.get("task") or {})}
-        reviewed = request.reviewed
+        try:
+            result = await uit_client.save(
+                task,
+                annotation.model_dump(),
+                request.timeSpent,
+                request.sessionId,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409 or not request.sessionId:
+                raise
+            latest = await uit_client.task(str(request.task["id"]), request.sessionId)
+            task = {**task, **(latest.get("task") or {})}
+            try:
+                result = await uit_client.save(
+                    task,
+                    annotation.model_dump(),
+                    request.timeSpent,
+                    request.sessionId,
+                )
+            except httpx.HTTPStatusError as retry_exc:
+                if retry_exc.response.status_code != 409 or not reviewed:
+                    raise
+                warnings.append("UIT rejected save because the task is already submitted or locked; marked reviewed locally.")
+        task = {**task, **(result.get("task") or {})}
         upsert_task(
             str(request.task["id"]),
             request.sessionId,
@@ -233,11 +254,12 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
                 reviewed=True,
             )
         return {
-            "status": "saved",
+            "status": "saved" if result else "reviewed_local",
             "result": result,
             "task": task,
             "caption": annotation.captionFinal,
             "issues": issues,
+            "warnings": warnings,
         }
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

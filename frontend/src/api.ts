@@ -40,7 +40,7 @@ export const api = {
       body: JSON.stringify({ task, notes })
     }),
   save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0, reviewed = false) =>
-    request<{ status: string; issues?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
+    request<{ status: string; issues?: string[]; warnings?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ sessionId, task, annotation, timeSpent, reviewed })

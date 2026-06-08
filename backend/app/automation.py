@@ -10,8 +10,8 @@ from .store import upsert_review_task, upsert_task
 from .uit_client import uit_client
 
 
-DELAY_MIN_SECONDS = 120
-DELAY_MAX_SECONDS = 300
+DELAY_MIN_SECONDS = 60
+DELAY_MAX_SECONDS = 150
 
 
 @dataclass
@@ -144,7 +144,7 @@ class AutomationRunner:
             upsert_review_task(
                 task_id,
                 session_id,
-                task,
+                result.get("task") or task,
                 "not_reviewed",
                 annotation.model_dump(),
                 annotation.captionFinal or "",

@@ -1,5 +1,5 @@
 import { Bot, Loader2, RefreshCw, Save, Send, Sparkles, Square } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { api } from "./api";
 import "./styles.css";
@@ -123,6 +123,23 @@ function buildCaption(annotation: Stage2Annotation): string {
   return `In the query image, Subject 1 refers to ${desc1}, and Subject 2 refers to ${desc2}. Retrieve target images where ${pair}${suffix}.`;
 }
 
+function mergeReviewTasks(current: ReviewTask[], incoming: ReviewTask[]): ReviewTask[] {
+  const currentById = new Map(current.map((item) => [item.taskId, item]));
+  return incoming.map((item) => {
+    const existing = currentById.get(item.taskId);
+    if (!existing) return item;
+    const task = item.task.images?.length || !existing.task.images?.length
+      ? item.task
+      : { ...item.task, images: existing.task.images };
+    return {
+      ...item,
+      task,
+      annotation: item.annotation ?? existing.annotation,
+      caption: item.caption || existing.caption
+    };
+  });
+}
+
 function App() {
   const [sessionId, setSessionId] = useState("");
   const [task, setTask] = useState<Task | null>(null);
@@ -134,11 +151,14 @@ function App() {
   const [automationLimit, setAutomationLimit] = useState(10);
   const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
+  const [reviewDrafts, setReviewDrafts] = useState<Record<string, Stage2Annotation>>({});
   const [reviewFilter, setReviewFilter] = useState("all");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
   const [activeSubjectId, setActiveSubjectId] = useState<number>(1);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+  const dirtyReviewDraftIds = useRef(new Set<string>());
+  const hydratingReviewTaskIds = useRef(new Set<string>());
 
   const caption = useMemo(() => buildCaption(annotation), [annotation]);
 
@@ -243,7 +263,52 @@ function App() {
 
   async function loadReviewTasks() {
     const data = await api.reviewTasks();
-    setReviewTasks(data.tasks);
+    setReviewTasks((current) => mergeReviewTasks(current, data.tasks));
+    void hydrateReviewTaskImages(data.tasks);
+    setReviewDrafts((current) => {
+      const next = { ...current };
+      for (const item of data.tasks) {
+        const incoming = item.annotation;
+        if (!next[item.taskId]) {
+          next[item.taskId] = item.annotation ?? emptyAnnotation();
+        } else if (
+          incoming &&
+          !dirtyReviewDraftIds.current.has(item.taskId) &&
+          !buildCaption(next[item.taskId]) &&
+          buildCaption(incoming)
+        ) {
+          next[item.taskId] = incoming;
+        }
+      }
+      return next;
+    });
+  }
+
+  async function hydrateReviewTaskImages(items: ReviewTask[]) {
+    const missingImageItems = items.filter((item) => !item.task.images?.length && !hydratingReviewTaskIds.current.has(item.taskId));
+    if (!missingImageItems.length) return;
+    for (const item of missingImageItems) {
+      hydratingReviewTaskIds.current.add(item.taskId);
+    }
+    const hydratedItems = await Promise.all(
+      missingImageItems.map(async (item) => {
+        try {
+          const data = await api.task(item.sessionId, item.taskId);
+          return { taskId: item.taskId, task: data.task };
+        } catch {
+          return null;
+        }
+      })
+    );
+    for (const item of missingImageItems) {
+      hydratingReviewTaskIds.current.delete(item.taskId);
+    }
+    setReviewTasks((current) =>
+      current.map((item) => {
+        const hydrated = hydratedItems.find((result) => result?.taskId === item.taskId);
+        return hydrated ? { ...item, task: hydrated.task } : item;
+      })
+    );
   }
 
   async function startAutomation() {
@@ -278,6 +343,43 @@ function App() {
       setAnnotation(item.annotation ?? emptyAnnotation());
       setIssues(item.issues ?? []);
       setMessage(`Reviewing ${item.taskId}`);
+    });
+  }
+
+  function reviewDraftFor(item: ReviewTask): Stage2Annotation {
+    return reviewDrafts[item.taskId] ?? item.annotation ?? emptyAnnotation();
+  }
+
+  function updateReviewDraft(taskId: string, updater: (current: Stage2Annotation) => Stage2Annotation) {
+    dirtyReviewDraftIds.current.add(taskId);
+    setReviewDrafts((current) => ({
+      ...current,
+      [taskId]: updater(current[taskId] ?? emptyAnnotation())
+    }));
+  }
+
+  async function approveReviewTask(item: ReviewTask) {
+    await run(`Approving ${item.taskId}`, async () => {
+      const draft = reviewDraftFor(item);
+      const annotationToSave = { ...draft, captionFinal: buildCaption(draft) };
+      const result = await api.save(item.sessionId, item.task, annotationToSave, 0, true);
+      dirtyReviewDraftIds.current.delete(item.taskId);
+      setReviewDrafts((current) => ({ ...current, [item.taskId]: annotationToSave }));
+      setReviewTasks((current) =>
+        current.map((reviewItem) =>
+          reviewItem.taskId === item.taskId
+            ? {
+                ...reviewItem,
+                annotation: annotationToSave,
+                caption: annotationToSave.captionFinal ?? "",
+                issues: result.issues ?? [],
+                reviewed: true,
+                status: "reviewed"
+              }
+            : reviewItem
+        )
+      );
+      showToast(result.warnings?.length ? result.warnings[0] : `Reviewed ${item.taskId}`, result.warnings?.length ? "info" : "success");
     });
   }
 
@@ -358,7 +460,7 @@ function App() {
           </div>
           <div className="editor-actions">
             <button disabled={!task} onClick={() => run("Generating with AI", async () => { if (!task) return; const data = await api.generate(task, notes); setAnnotation(data.annotation); setIssues(data.issues); setMessage("AI draft ready"); showToast("AI Draft annotation generated", "success"); })}><Sparkles size={16} />Generate</button>
-            <button disabled={!task || !isReviewTask} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }, 0, true); if (result.task) setTask(result.task); setIssues(result.issues ?? []); setMessage(result.status); await loadReviewTasks(); if (result.status === "saved") { showToast("Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
+            <button disabled={!task || !isReviewTask} onClick={() => run("Saving to UIT", async () => { if (!task) return; const result = await api.save(sessionId, task, { ...annotation, captionFinal: caption }, 0, true); if (result.task) setTask(result.task); setIssues(result.issues ?? []); setMessage(result.status); await loadReviewTasks(); if (result.status === "saved" || result.status === "reviewed_local") { showToast(result.warnings?.[0] ?? "Draft saved successfully to UIT" + (result.issues?.length ? " with warnings" : ""), result.warnings?.length || result.issues?.length ? "info" : "success"); } else { showToast("Save failed", "error"); } })}><Save size={16} />Sync save</button>
             <button disabled={!task || !isManualTask} onClick={() => run("Submitting", async () => { if (!task) return; const result = await api.submit(sessionId, task, { ...annotation, captionFinal: caption }); setIssues(result.issues ?? []); setMessage(result.status); if (result.status === "submitted") { showToast("Annotation submitted successfully!", "success"); const next = await api.autoCurrentTask(); setSessionId(next.sessionId ?? ""); setTask(next.task); setActiveTaskMode("manual"); setAnnotation(emptyAnnotation()); } else { showToast("Submission blocked: please fix issues", "error"); } })}><Send size={16} />Submit & next</button>
           </div>
         </div>
@@ -427,19 +529,257 @@ function App() {
         </div>
         <div className="review-list">
           {visibleReviewTasks.map((item) => (
-            <button className="review-item" onClick={() => { void openReviewTask(item); }} key={item.taskId}>
-              <strong>{item.status}</strong>
-              <span>{item.taskId}</span>
-              <small>{item.updatedAt}</small>
-              <a href={item.workUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Open UIT task</a>
-              <a href={item.submissionsUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>Submissions</a>
-            </button>
+            <ReviewQuickCard
+              item={item}
+              draft={reviewDraftFor(item)}
+              disabled={busy}
+              onApprove={() => { void approveReviewTask(item); }}
+              onOpen={() => { void openReviewTask(item); }}
+              onChange={(updater) => updateReviewDraft(item.taskId, updater)}
+              key={item.taskId}
+            />
           ))}
           {!visibleReviewTasks.length ? <div className="empty review-empty">No review items yet</div> : null}
         </div>
       </section>
     </main>
   );
+}
+
+function ReviewQuickCard({
+  item,
+  draft,
+  disabled,
+  onApprove,
+  onOpen,
+  onChange
+}: {
+  item: ReviewTask;
+  draft: Stage2Annotation;
+  disabled: boolean;
+  onApprove: () => void;
+  onOpen: () => void;
+  onChange: (updater: (current: Stage2Annotation) => Stage2Annotation) => void;
+}) {
+  const reviewed = item.reviewed || item.status === "reviewed";
+  const captionPreview = buildCaption(draft) || item.caption;
+
+  function setReviewCaseType(caseType: CaseType) {
+    onChange((current) => {
+      const subjects =
+        caseType === "SINGLE"
+          ? [current.subjects.find((subject) => subject.subjectId === 1) ?? emptySubject(1)]
+          : [
+              current.subjects.find((subject) => subject.subjectId === 1) ?? emptySubject(1),
+              current.subjects.find((subject) => subject.subjectId === 2) ?? emptySubject(2)
+            ];
+      return {
+        ...current,
+        caseType,
+        subjects,
+        relationalSubject1ChangeEnabled: false,
+        relationalSubject2ChangeEnabled: false
+      };
+    });
+  }
+
+  function updateReviewSubject(subjectId: number, patch: Partial<SubjectAnnotation>) {
+    onChange((current) => ({
+      ...current,
+      subjects: current.subjects.map((subject) =>
+        subject.subjectId === subjectId ? { ...subject, ...patch } : subject
+      )
+    }));
+  }
+
+  function toggleReviewBox(subjectId: number, type: "QUERY" | "TARGET", boxId: string) {
+    onChange((current) => ({
+      ...current,
+      subjects: current.subjects.map((subject) => {
+        if (subject.subjectId !== subjectId) return subject;
+        const field = type === "QUERY" ? "queryGroupIds" : "targetGroupIds";
+        const currentIds = subject[field] || [];
+        const nextIds = currentIds.includes(boxId)
+          ? currentIds.filter((id) => id !== boxId)
+          : [...currentIds, boxId];
+        return { ...subject, [field]: nextIds };
+      })
+    }));
+  }
+
+  return (
+    <article className={`review-card ${reviewed ? "review-card-reviewed" : ""}`}>
+      <div className="review-card-check">
+        <label title={reviewed ? "Already reviewed" : "Approve and mark reviewed"}>
+          <input
+            type="checkbox"
+            checked={reviewed}
+            disabled={disabled || reviewed}
+            onChange={(event) => {
+              if (event.target.checked) onApprove();
+            }}
+          />
+          <span>Approve</span>
+        </label>
+      </div>
+
+      <div className="review-card-body">
+        <div className="review-card-top">
+          <div>
+            <strong>{item.status}</strong>
+            <span>{item.taskId}</span>
+            <small>{item.updatedAt}</small>
+          </div>
+          <div className="review-card-links">
+            <button type="button" onClick={onOpen}>Open editor</button>
+            <a href={item.workUrl} target="_blank" rel="noreferrer">UIT task</a>
+            <a href={item.submissionsUrl} target="_blank" rel="noreferrer">Submissions</a>
+          </div>
+        </div>
+
+        <div className="review-card-grid">
+          <ReviewThumb
+            title="Query"
+            type="QUERY"
+            image={imageBySide(item.task, "QUERY")}
+            annotation={draft}
+            onToggleBox={(subjectId, boxId) => toggleReviewBox(subjectId, "QUERY", boxId)}
+          />
+          <ReviewThumb
+            title="Target"
+            type="TARGET"
+            image={imageBySide(item.task, "TARGET")}
+            annotation={draft}
+            onToggleBox={(subjectId, boxId) => toggleReviewBox(subjectId, "TARGET", boxId)}
+          />
+        </div>
+
+        <div className="quick-fields">
+          <select value={draft.caseType} onChange={(event) => setReviewCaseType(event.target.value as CaseType)}>
+            <option value="SINGLE">SINGLE</option>
+            <option value="MULTI">MULTI</option>
+            <option value="RELATIONAL">RELATIONAL</option>
+          </select>
+          {draft.subjects.map((subject) => (
+            <div className="quick-subject" key={subject.subjectId}>
+              <strong>Subject {subject.subjectId}</strong>
+              <input
+                placeholder="Query group IDs"
+                value={subject.queryGroupIds.join(", ")}
+                onChange={(event) => updateReviewSubject(subject.subjectId, { queryGroupIds: splitIds(event.target.value) })}
+              />
+              <input
+                placeholder="Target group IDs"
+                value={subject.targetGroupIds.join(", ")}
+                onChange={(event) => updateReviewSubject(subject.subjectId, { targetGroupIds: splitIds(event.target.value) })}
+              />
+              <textarea
+                placeholder="DESC in query image"
+                value={subject.descQueryFinal}
+                onChange={(event) => updateReviewSubject(subject.subjectId, { descQueryRaw: event.target.value, descQueryFinal: event.target.value })}
+              />
+              {draft.caseType !== "RELATIONAL" || subject.subjectId === 1 && draft.relationalSubject1ChangeEnabled || subject.subjectId === 2 && draft.relationalSubject2ChangeEnabled ? (
+                <textarea
+                  placeholder="CHANGE in target image"
+                  value={subject.changeTargetFinal}
+                  onChange={(event) => updateReviewSubject(subject.subjectId, { changeTargetRaw: event.target.value, changeTargetFinal: event.target.value })}
+                />
+              ) : null}
+            </div>
+          ))}
+          {draft.caseType === "RELATIONAL" ? (
+            <div className="quick-relation">
+              <input
+                placeholder="PAIR_CHANGE"
+                value={draft.pairChangeFinal ?? ""}
+                onChange={(event) => onChange((current) => ({ ...current, pairChangeRaw: event.target.value, pairChangeFinal: event.target.value }))}
+              />
+              <label><input type="checkbox" checked={draft.relationalSubject1ChangeEnabled} onChange={(event) => onChange((current) => ({ ...current, relationalSubject1ChangeEnabled: event.target.checked }))} /> Subject 1 extra CHANGE</label>
+              <label><input type="checkbox" checked={draft.relationalSubject2ChangeEnabled} onChange={(event) => onChange((current) => ({ ...current, relationalSubject2ChangeEnabled: event.target.checked }))} /> Subject 2 extra CHANGE</label>
+            </div>
+          ) : null}
+        </div>
+
+        <div className="quick-caption">
+          <span>Caption preview</span>
+          <p>{captionPreview || "Missing required fields."}</p>
+        </div>
+        {item.issues.length ? <ul className="issues quick-issues">{item.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
+      </div>
+    </article>
+  );
+}
+
+function ReviewThumb({
+  title,
+  type,
+  image,
+  annotation,
+  onToggleBox
+}: {
+  title: string;
+  type: "QUERY" | "TARGET";
+  image: TaskImage | null;
+  annotation: Stage2Annotation;
+  onToggleBox: (subjectId: number, boxId: string) => void;
+}) {
+  const boxes = image?.boxes ?? [];
+  const subjectColors = ["#14b8a6", "#f59e0b", "#3b82f6", "#ef4444"];
+
+  function ownerForBox(boxId: string): SubjectAnnotation | undefined {
+    return annotation.subjects.find((subject) => {
+      const ids = type === "QUERY" ? subject.queryGroupIds : subject.targetGroupIds;
+      return ids.includes(boxId);
+    });
+  }
+
+  return (
+    <div className="review-thumb">
+      <span>{title}</span>
+      {image?.imageUrl ? (
+        <div className="review-thumb-frame">
+          <div className="review-image-wrap">
+            <img src={fullImageUrl(image.imageUrl)} alt={title} />
+            {boxes.map((box) => {
+              const id = String(box.groupUid || box.label || box.id);
+              const owner = ownerForBox(id);
+              const subjectId = owner?.subjectId ?? annotation.subjects[0]?.subjectId ?? 1;
+              const color = subjectColors[(subjectId - 1) % subjectColors.length];
+              const selected = Boolean(owner);
+
+              return (
+                <button
+                  className={`review-box ${selected ? "review-box-selected" : ""}`}
+                  style={{
+                    left: `${(box.x ?? 0) * 100}%`,
+                    top: `${(box.y ?? 0) * 100}%`,
+                    width: `${(box.width ?? 0) * 100}%`,
+                    height: `${(box.height ?? 0) * 100}%`,
+                    borderColor: selected ? color : "rgba(255, 255, 255, 0.55)",
+                    backgroundColor: selected ? `${color}26` : "rgba(255, 255, 255, 0.04)"
+                  }}
+                  title={`${selected ? `Subject ${subjectId}` : "Add to Subject 1"} - Box ${id}`}
+                  onClick={() => onToggleBox(subjectId, id)}
+                  key={String(box.id)}
+                  type="button"
+                >
+                  <span style={{ backgroundColor: selected ? color : "rgba(0, 0, 0, 0.65)" }}>
+                    {selected ? `S${subjectId} ${id}` : id}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <div className="review-thumb-empty">No image</div>
+      )}
+    </div>
+  );
+}
+
+function splitIds(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
 function ImagePane({
