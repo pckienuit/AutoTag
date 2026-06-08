@@ -33,6 +33,12 @@ export const api = {
   stopAutomation: () => request<AutomationStatus>("/api/automation/stop", { method: "POST" }),
   automationStatus: () => request<AutomationStatus>("/api/automation/status"),
   reviewTasks: () => request<{ tasks: ReviewTask[] }>("/api/review/tasks"),
+  approveReview: (sessionId: string, task: Task, annotation: Stage2Annotation, issues: string[] = []) =>
+    request<{ status: string; issues?: string[]; caption?: string }>("/api/review/approve", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ sessionId, task, annotation, issues })
+    }),
   generate: (task: Task, notes: string) =>
     request<{ annotation: Stage2Annotation; caption: string; issues: string[] }>("/api/ai/generate", {
       method: "POST",

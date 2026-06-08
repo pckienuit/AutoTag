@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .ai_service import fix_annotation_text, generate_annotation
 from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
-from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, RuntimeSettings, SyncRequest
+from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
 from .store import list_review_tasks, list_tasks, upsert_review_task, upsert_task
 from .uit_client import uit_client
@@ -174,6 +174,37 @@ async def review_submissions(session_id: str) -> dict[str, object]:
         return await uit_client.submissions(session_id, sent=True)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/review/approve")
+async def approve_review_task(request: ReviewApproveRequest) -> dict[str, object]:
+    annotation = request.annotation
+    annotation.captionFinal = build_caption(annotation)
+    task_id = str(request.task["id"])
+    upsert_task(
+        task_id,
+        request.sessionId,
+        request.task,
+        annotation.model_dump(),
+        status="reviewed",
+        needs_review=False,
+        reviewed=True,
+    )
+    upsert_review_task(
+        task_id,
+        request.sessionId,
+        request.task,
+        "reviewed",
+        annotation.model_dump(),
+        annotation.captionFinal or "",
+        request.issues,
+        reviewed=True,
+    )
+    return {
+        "status": "reviewed_local",
+        "caption": annotation.captionFinal,
+        "issues": request.issues,
+    }
 
 
 @app.post("/api/ai/generate")

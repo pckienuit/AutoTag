@@ -380,7 +380,10 @@ function App() {
     await run(`Approving ${item.taskId}`, async () => {
       const draft = reviewDraftFor(item);
       const annotationToSave = { ...draft, captionFinal: buildCaption(draft) };
-      const result = await api.save(item.sessionId, item.task, annotationToSave, 0, true);
+      const hasLocalEdits = dirtyReviewDraftIds.current.has(item.taskId);
+      const result = hasLocalEdits
+        ? await api.save(item.sessionId, item.task, annotationToSave, 0, true)
+        : await api.approveReview(item.sessionId, item.task, annotationToSave, item.issues);
       dirtyReviewDraftIds.current.delete(item.taskId);
       setReviewDrafts((current) => ({ ...current, [item.taskId]: annotationToSave }));
       setReviewTasks((current) =>
@@ -397,7 +400,8 @@ function App() {
             : reviewItem
         )
       );
-      showToast(result.warnings?.length ? result.warnings[0] : `Reviewed ${item.taskId}`, result.warnings?.length ? "info" : "success");
+      const warning = hasLocalEdits && "warnings" in result && Array.isArray(result.warnings) ? result.warnings[0] : undefined;
+      showToast(warning ?? (hasLocalEdits ? `Synced and reviewed ${item.taskId}` : `Reviewed ${item.taskId}`), warning ? "info" : "success");
     });
   }
 

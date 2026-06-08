@@ -61,6 +61,13 @@ class FixTextRequest(BaseModel):
     field: str = "annotation"
 
 
+class ReviewApproveRequest(BaseModel):
+    task: dict[str, Any]
+    annotation: Stage2Annotation
+    sessionId: str
+    issues: list[str] = Field(default_factory=list)
+
+
 class SyncRequest(BaseModel):
     task: dict[str, Any]
     annotation: Stage2Annotation
