@@ -40,6 +40,9 @@ app.add_middleware(
 )
 
 
+SAVE_REFRESH_RETRY_STATUSES = {400, 409}
+
+
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -255,7 +258,7 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
                 request.sessionId,
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 409 or not request.sessionId:
+            if exc.response.status_code not in SAVE_REFRESH_RETRY_STATUSES or not request.sessionId:
                 raise
             latest = await uit_client.task(str(request.task["id"]), request.sessionId)
             task = {**task, **(latest.get("task") or {})}

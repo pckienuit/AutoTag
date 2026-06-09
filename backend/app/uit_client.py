@@ -15,6 +15,17 @@ class UitRateLimitError(RuntimeError):
     pass
 
 
+def raise_for_status_with_body(response: httpx.Response) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        detail = response.text.strip()
+        if detail:
+            message = f"{exc} Response body: {detail[:1000]}"
+            raise httpx.HTTPStatusError(message, request=exc.request, response=exc.response) from exc
+        raise
+
+
 class UitClient:
     def __init__(self) -> None:
         self.base_url = "https://aiclub.uit.edu.vn"
@@ -34,7 +45,7 @@ class UitClient:
         if not payload["email"] or not payload["password"]:
             raise ValueError("UIT email/password are required.")
         response = await self.client.post(f"{self.api_prefix}/auth/login", json=payload)
-        response.raise_for_status()
+        raise_for_status_with_body(response)
         self._authenticated_until = time.monotonic() + 900
         return response.json()
 
@@ -44,7 +55,7 @@ class UitClient:
             return None
         if response.status_code == 429:
             raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
-        response.raise_for_status()
+        raise_for_status_with_body(response)
         return response.json()
 
     async def ensure_login(self) -> None:
@@ -64,7 +75,7 @@ class UitClient:
             response = await self.client.get(path)
         if response.status_code == 429:
             raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
-        response.raise_for_status()
+        raise_for_status_with_body(response)
         return response.json()
 
     async def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -76,7 +87,7 @@ class UitClient:
             response = await self.client.post(path, json=payload)
         if response.status_code == 429:
             raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
-        response.raise_for_status()
+        raise_for_status_with_body(response)
         return response.json()
 
     async def sessions(self) -> dict[str, Any]:
@@ -138,7 +149,7 @@ class UitClient:
             response = await self.client.get(absolute_url)
         if response.status_code == 429:
             raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
-        response.raise_for_status()
+        raise_for_status_with_body(response)
         content_type = response.headers.get("content-type")
         image_bytes = response.content
         if content_type and content_type.startswith("image/"):
