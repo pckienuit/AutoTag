@@ -184,7 +184,6 @@ async def approve_review_task(request: ReviewApproveRequest) -> dict[str, object
     annotation = request.annotation
     annotation.captionFinal = build_caption(annotation)
     task_id = str(request.task["id"])
-    delay_interrupted = automation_runner.interrupt_delay()
     upsert_task(
         task_id,
         request.sessionId,
@@ -208,7 +207,6 @@ async def approve_review_task(request: ReviewApproveRequest) -> dict[str, object
         "status": "reviewed_local",
         "caption": annotation.captionFinal,
         "issues": request.issues,
-        "delayInterrupted": delay_interrupted,
     }
 
 
@@ -251,7 +249,6 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
     task = request.task
     result: dict[str, object] = {}
     warnings: list[str] = []
-    delay_interrupted = False
     try:
         try:
             result = await uit_client.save(
@@ -287,7 +284,6 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
             reviewed=reviewed,
         )
         if reviewed and request.sessionId:
-            delay_interrupted = automation_runner.interrupt_delay()
             upsert_review_task(
                 str(request.task["id"]),
                 request.sessionId,
@@ -306,7 +302,6 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
             "caption": annotation.captionFinal,
             "issues": issues,
             "warnings": warnings,
-            "delayInterrupted": delay_interrupted if reviewed else False,
         }
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

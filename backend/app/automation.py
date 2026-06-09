@@ -35,7 +35,6 @@ class AutomationRunner:
         self.settings_factory = settings_factory
         self.state = AutomationState()
         self.task: asyncio.Task[None] | None = None
-        self._delay_interrupt: asyncio.Event | None = None
 
     def status(self) -> dict[str, Any]:
         return asdict(self.state)
@@ -52,16 +51,9 @@ class AutomationRunner:
     def stop(self) -> dict[str, Any]:
         self.state.stop_requested = True
         self.state.message = "Stop requested"
-        self.interrupt_delay()
         if self.task and not self.task.done():
             self.task.cancel()
         return self.status()
-
-    def interrupt_delay(self) -> bool:
-        if not self.state.next_delay_seconds or not self._delay_interrupt:
-            return False
-        self._delay_interrupt.set()
-        return True
 
     async def _run(self, mode: AutomationMode, limit: int | None) -> None:
         try:
@@ -170,17 +162,8 @@ class AutomationRunner:
 
     async def _sleep_between_submissions(self) -> None:
         delay = random.randint(DELAY_MIN_SECONDS, DELAY_MAX_SECONDS)
-        self._delay_interrupt = asyncio.Event()
-        try:
-            for remaining in range(delay, 0, -1):
-                self.state.next_delay_seconds = remaining
-                self.state.message = f"Waiting {remaining} seconds before next task"
-                try:
-                    await asyncio.wait_for(self._delay_interrupt.wait(), timeout=1)
-                    self.state.message = "Delay skipped after review approval"
-                    break
-                except TimeoutError:
-                    continue
-        finally:
-            self.state.next_delay_seconds = None
-            self._delay_interrupt = None
+        for remaining in range(delay, 0, -1):
+            self.state.next_delay_seconds = remaining
+            self.state.message = f"Waiting {remaining} seconds before next task"
+            await asyncio.sleep(1)
+        self.state.next_delay_seconds = None

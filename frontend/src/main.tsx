@@ -170,6 +170,7 @@ function App() {
   const [reviewFilter, setReviewFilter] = useState("all");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
+  const [approvingTaskIds, setApprovingTaskIds] = useState<Set<string>>(new Set());
   const [activeSubjectId, setActiveSubjectId] = useState<number>(1);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const dirtyReviewDraftIds = useRef(new Set<string>());
@@ -382,7 +383,9 @@ function App() {
   }
 
   async function approveReviewTask(item: ReviewTask) {
-    await run(`Approving ${item.taskId}`, async () => {
+    setApprovingTaskIds((current) => new Set(current).add(item.taskId));
+    setMessage(`Approving ${item.taskId}`);
+    try {
       const draft = reviewDraftFor(item);
       const annotationToSave = { ...draft, captionFinal: buildCaption(draft) };
       const hasLocalEdits = dirtyReviewDraftIds.current.has(item.taskId);
@@ -406,9 +409,19 @@ function App() {
         )
       );
       const warning = hasLocalEdits && "warnings" in result && Array.isArray(result.warnings) ? result.warnings[0] : undefined;
-      const delayNote = result.delayInterrupted ? " and skipped automation delay" : "";
-      showToast(warning ?? (hasLocalEdits ? `Synced and reviewed ${item.taskId}${delayNote}` : `Reviewed ${item.taskId}${delayNote}`), warning ? "info" : "success");
-    });
+      setMessage(hasLocalEdits ? "Synced and reviewed" : "Reviewed");
+      showToast(warning ?? (hasLocalEdits ? `Synced and reviewed ${item.taskId}` : `Reviewed ${item.taskId}`), warning ? "info" : "success");
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      setMessage(errorMessage);
+      showToast(errorMessage, "error");
+    } finally {
+      setApprovingTaskIds((current) => {
+        const next = new Set(current);
+        next.delete(item.taskId);
+        return next;
+      });
+    }
   }
 
   const visibleReviewTasks = reviewTasks.filter((item) => reviewFilter === "all" || item.status === reviewFilter);
@@ -569,7 +582,7 @@ function App() {
             <ReviewQuickCard
               item={item}
               draft={reviewDraftFor(item)}
-              disabled={busy}
+              disabled={approvingTaskIds.has(item.taskId)}
               onApprove={() => { void approveReviewTask(item); }}
               onOpen={() => { void openReviewTask(item); }}
               onChange={(updater) => updateReviewDraft(item.taskId, updater)}
