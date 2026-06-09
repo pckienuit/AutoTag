@@ -34,7 +34,7 @@ export const api = {
   automationStatus: () => request<AutomationStatus>("/api/automation/status"),
   reviewTasks: () => request<{ tasks: ReviewTask[] }>("/api/review/tasks"),
   approveReview: (sessionId: string, task: Task, annotation: Stage2Annotation, issues: string[] = []) =>
-    request<{ status: string; issues?: string[]; caption?: string }>("/api/review/approve", {
+    request<{ status: string; issues?: string[]; caption?: string; delayInterrupted?: boolean }>("/api/review/approve", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ sessionId, task, annotation, issues })
@@ -52,7 +52,7 @@ export const api = {
       body: JSON.stringify({ text, field })
     }),
   save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0, reviewed = false) =>
-    request<{ status: string; issues?: string[]; warnings?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
+    request<{ status: string; issues?: string[]; warnings?: string[]; caption?: string; task?: Task; delayInterrupted?: boolean }>("/api/uit/save", {
       method: "POST",
       headers: jsonHeaders,
       body: JSON.stringify({ sessionId, task, annotation, timeSpent, reviewed })

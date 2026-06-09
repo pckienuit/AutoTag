@@ -406,7 +406,8 @@ function App() {
         )
       );
       const warning = hasLocalEdits && "warnings" in result && Array.isArray(result.warnings) ? result.warnings[0] : undefined;
-      showToast(warning ?? (hasLocalEdits ? `Synced and reviewed ${item.taskId}` : `Reviewed ${item.taskId}`), warning ? "info" : "success");
+      const delayNote = result.delayInterrupted ? " and skipped automation delay" : "";
+      showToast(warning ?? (hasLocalEdits ? `Synced and reviewed ${item.taskId}${delayNote}` : `Reviewed ${item.taskId}${delayNote}`), warning ? "info" : "success");
     });
   }
 
