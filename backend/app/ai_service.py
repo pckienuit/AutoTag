@@ -31,6 +31,7 @@ Follow these field rules:
 - Do not use IDs, technical terms, or overly generic labels like "the person" when the image allows a more specific description.
 - Write concise, natural English fragments, not full sentences inside DESC/CHANGE/PAIR_CHANGE.
 - If multiple people are best treated as one unit, use SINGLE.
+- When Subject 1 is a group, write CHANGE with plural grammar and name the group naturally, such as "the two people in Subject 1 are wearing white shirts and sitting in the stands".
 - If a field is not supported by visible evidence, leave it empty rather than guessing.
 - When choosing DESC details, prioritize visible uniqueness in this order: clothing -> accessories -> hair -> environment.
 - If clothing evidence is sparse or absent, strengthen the description with accessories, then hair, then environment/background only as needed to disambiguate.
@@ -40,7 +41,11 @@ Follow these field rules:
 - Count separate visible cues such as clothing color/type, text or pattern on clothing, accessories, hairstyle, pose, relative position, nearby object, and immediate background/environment.
 - Use simple English vocabulary, ideally below B1 level. Prefer plain, common words over advanced or academic wording.
 - Keep phrasing natural and clear, but avoid rare adjectives or complex sentence structures when a simpler phrase says the same thing.
-- Avoid overusing commas. Prefer natural connector words where possible, and do not put a comma before connector words such as "and", "but", "or", "because", "while", "when", or "so".
+- Avoid overusing commas. Prefer natural connector words where possible.
+- Use commas only when they make the grammar clearer, such as separating a list of action fragments: "is wearing blue jeans, not wearing a hat, and placing his hands behind his back".
+- Do not stack fragments without connectors, such as "is wearing blue jeans not wearing a hat hands placed behind back".
+- Avoid a comma before simple connector words when the sentence already reads clearly without it.
+- For extra context about another visible person or object, use a connected phrase such as "with a man between them holding a yellow drink" instead of attaching a loose clause.
 - Vary the wording a little when the images allow it, so similar tasks do not always produce the exact same phrasing.
 - Prefer human-like, direct descriptions grounded in the image over rigid template-heavy wording, while still keeping the final caption valid and easy to read.
 

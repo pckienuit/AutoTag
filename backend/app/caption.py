@@ -66,7 +66,7 @@ def build_caption(annotation: Stage2Annotation) -> str:
         if not desc1 or not desc2 or not change1 or not change2:
             return ""
         return (
-            f"In the query image, Subject 1 refers to {desc1}, and Subject 2 refers to {desc2}. "
+            f"In the query image, Subject 1 refers to {desc1} and Subject 2 refers to {desc2}. "
             f"Retrieve target images where Subject 1 {change1} and Subject 2 {change2}."
         )
 
@@ -84,7 +84,7 @@ def build_caption(annotation: Stage2Annotation) -> str:
     elif len(extras) == 2:
         suffix = f", with {extras[0]} and {extras[1]}"
     return (
-        f"In the query image, Subject 1 refers to {desc1}, and Subject 2 refers to {desc2}. "
+        f"In the query image, Subject 1 refers to {desc1} and Subject 2 refers to {desc2}. "
         f"Retrieve target images where {pair}{suffix}."
     )
 
@@ -130,4 +130,3 @@ def validate_annotation(annotation: Stage2Annotation) -> list[str]:
     elif has_placeholder(caption):
         issues.append("Caption has an unresolved placeholder.")
     return issues
-

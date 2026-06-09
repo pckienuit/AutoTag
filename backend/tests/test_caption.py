@@ -116,10 +116,9 @@ def test_relational_caption_no_extras() -> None:
     )
     caption = build_caption(annotation)
     assert caption == (
-        "In the query image, Subject 1 refers to the fourth seated person from the right, "
+        "In the query image, Subject 1 refers to the fourth seated person from the right "
         "and Subject 2 refers to the third seated person from the right. "
         "Retrieve target images where Subject 1 is taking a photo of Subject 2."
     )
     assert validate_annotation(annotation) == []
-
 
