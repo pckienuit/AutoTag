@@ -40,13 +40,14 @@ Follow these field rules:
 - Count separate visible cues such as clothing color/type, text or pattern on clothing, accessories, hairstyle, pose, relative position, nearby object, and immediate background/environment.
 - Use simple English vocabulary, ideally below B1 level. Prefer plain, common words over advanced or academic wording.
 - Keep phrasing natural and clear, but avoid rare adjectives or complex sentence structures when a simpler phrase says the same thing.
+- Avoid overusing commas. Prefer natural connector words where possible, and do not put a comma before connector words such as "and", "but", "or", "because", "while", "when", or "so".
 - Vary the wording a little when the images allow it, so similar tasks do not always produce the exact same phrasing.
 - Prefer human-like, direct descriptions grounded in the image over rigid template-heavy wording, while still keeping the final caption valid and easy to read.
 
 The final caption built from your fields should follow these patterns:
 - SINGLE: In the query image, Subject 1 refers to [DESC]. Retrieve target images where Subject 1 [CHANGE].
-- MULTI: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [CHANGE 1] and Subject 2 [CHANGE 2].
-- RELATIONAL: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [PAIR_CHANGE] Subject 2.
+- MULTI: In the query image, Subject 1 refers to [DESC 1] and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [CHANGE 1] and Subject 2 [CHANGE 2].
+- RELATIONAL: In the query image, Subject 1 refers to [DESC 1] and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [PAIR_CHANGE] Subject 2.
 
 Before responding, verify that the JSON is valid, the case is consistent with the target image, and the text is short, natural, and grounded in visible evidence.
 """
@@ -157,6 +158,7 @@ Rules:
 - Translate to English if needed.
 - Keep only the meaning the user provided. Do not add new visible details.
 - Follow the CPR annotation system rules: simple B1-level English, natural, concise, image-grounded wording.
+- Avoid overusing commas. Prefer natural connector words where possible, and do not put a comma before connector words.
 - Return a fragment, not a full sentence.
 - Do not add markdown, quotes, labels, JSON, or commentary.
 - For DESC, describe who the subject is in the query image.
