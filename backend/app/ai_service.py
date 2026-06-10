@@ -131,6 +131,12 @@ async def generate_annotation(
             data_url = await uit_client.image_as_data_url(str(image["imageUrl"]))
             content.append({"type": "text", "text": label})
             content.append({"type": "image_url", "image_url": {"url": data_url}})
+            boxed_data_url = await uit_client.image_as_data_url(
+                str(image["imageUrl"]),
+                boxes=box_summary(image),
+            )
+            content.append({"type": "text", "text": f"{label} with bounding boxes"})
+            content.append({"type": "image_url", "image_url": {"url": boxed_data_url}})
 
     payload = chat_payload(
         settings.openai_compat_model,

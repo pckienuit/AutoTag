@@ -33,6 +33,12 @@ export const api = {
   stopAutomation: () => request<AutomationStatus>("/api/automation/stop", { method: "POST" }),
   automationStatus: () => request<AutomationStatus>("/api/automation/status"),
   reviewTasks: () => request<{ tasks: ReviewTask[] }>("/api/review/tasks"),
+  importReviewTasks: (remoteUrl: string) =>
+    request<{ status: string; source: string; imported: number; skipped: number }>("/api/review/import-remote", {
+      method: "POST",
+      headers: jsonHeaders,
+      body: JSON.stringify({ remoteUrl })
+    }),
   approveReview: (sessionId: string, task: Task, annotation: Stage2Annotation, issues: string[] = []) =>
     request<{ status: string; issues?: string[]; caption?: string }>("/api/review/approve", {
       method: "POST",

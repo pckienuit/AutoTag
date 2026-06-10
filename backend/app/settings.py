@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_compat_api_key: str = Field(default="", alias="OPENAI_COMPAT_API_KEY")
     openai_compat_model: str = Field(default="gpt-4o-mini", alias="OPENAI_COMPAT_MODEL")
     auto_submit_enabled: bool = Field(default=False, alias="AUTO_SUBMIT_ENABLED")
+    remote_review_queue_url: str = Field(default="", alias="REMOTE_REVIEW_QUEUE_URL")
 
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
 

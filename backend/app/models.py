@@ -68,6 +68,10 @@ class ReviewApproveRequest(BaseModel):
     issues: list[str] = Field(default_factory=list)
 
 
+class ReviewImportRequest(BaseModel):
+    remoteUrl: str | None = None
+
+
 class SyncRequest(BaseModel):
     task: dict[str, Any]
     annotation: Stage2Annotation

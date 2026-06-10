@@ -2,12 +2,14 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .ai_service import fix_annotation_text, generate_annotation
 from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
-from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, RuntimeSettings, SyncRequest
+from .image_cache import cache_task_images, cached_image_path
+from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, ReviewImportRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
 from .store import list_review_tasks, list_tasks, upsert_review_task, upsert_task
 from .uit_client import uit_client
@@ -41,6 +43,164 @@ app.add_middleware(
 
 
 SAVE_REFRESH_RETRY_STATUSES = {400, 409}
+
+
+def review_import_url(remote_url: str) -> str:
+    url = remote_url.strip().rstrip("/")
+    if not url:
+        raise ValueError("Remote review queue URL is required.")
+    if url.endswith("/api/review/tasks"):
+        return url
+    return f"{url}/api/review/tasks"
+
+
+def remote_base_url(import_url: str) -> str:
+    marker = "/api/review/tasks"
+    if import_url.endswith(marker):
+        return import_url[: -len(marker)].rstrip("/")
+    return import_url.rstrip("/")
+
+
+def task_has_images(task: object) -> bool:
+    return isinstance(task, dict) and bool(task.get("images"))
+
+
+def is_unreviewed_review_item(item: object) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("reviewed") is True:
+        return False
+    return str(item.get("status") or "").lower() != "reviewed"
+
+
+def importable_annotation(annotation: object) -> dict[str, object] | None:
+    if not isinstance(annotation, dict):
+        return None
+    if not isinstance(annotation.get("subjects"), list):
+        return None
+    normalized = dict(annotation)
+    if not isinstance(normalized.get("llmEdits"), list):
+        normalized["llmEdits"] = []
+    return normalized
+
+
+def annotation_from_task(task: dict[str, object]) -> dict[str, object] | None:
+    blocks = task.get("blocks")
+    if not isinstance(blocks, dict):
+        return None
+    return importable_annotation(blocks)
+
+
+async def hydrate_remote_review_item(
+    client: httpx.AsyncClient,
+    base_url: str,
+    item: dict[str, object],
+) -> dict[str, object]:
+    task = item.get("task")
+    session_id = item.get("sessionId")
+    task_id = item.get("taskId") or (task.get("id") if isinstance(task, dict) else None)
+    if task_has_images(task) or not session_id or not task_id:
+        return item
+
+    response = await client.get(
+        f"{base_url}/api/uit/sessions/{session_id}/tasks/{task_id}"
+    )
+    response.raise_for_status()
+    data = response.json()
+    remote_task = data.get("task") if isinstance(data, dict) else None
+    if not isinstance(remote_task, dict):
+        return item
+
+    hydrated = {**item, "task": remote_task}
+    if importable_annotation(hydrated.get("annotation")) is None:
+        task_annotation = annotation_from_task(remote_task)
+        if task_annotation is not None:
+            hydrated["annotation"] = task_annotation
+    if not hydrated.get("caption"):
+        hydrated["caption"] = str(remote_task.get("caption") or "")
+    return hydrated
+
+
+async def import_review_item(item: dict[str, object]) -> tuple[bool, int]:
+    task = item.get("task")
+    session_id = item.get("sessionId")
+    task_id = item.get("taskId") or (task.get("id") if isinstance(task, dict) else None)
+    if not isinstance(task, dict) or not task_id or not session_id:
+        return False, 0
+
+    task_id_text = str(task_id)
+    session_id_text = str(session_id)
+    task, cached = await cache_task_images(task)
+    annotation = importable_annotation(item.get("annotation"))
+    status = str(item.get("status") or "not_reviewed")
+    issues = item.get("issues") if isinstance(item.get("issues"), list) else []
+    submit_result = item.get("submitResult") if isinstance(item.get("submitResult"), dict) else None
+    caption = str(item.get("caption") or "")
+    error = str(item.get("error")) if item.get("error") is not None else None
+
+    upsert_task(
+        task_id_text,
+        session_id_text,
+        task,
+        annotation,
+        status=status,
+        needs_review=True,
+        reviewed=False,
+    )
+    upsert_review_task(
+        task_id_text,
+        session_id_text,
+        task,
+        status,
+        annotation,
+        caption,
+        [str(issue) for issue in issues],
+        error=error,
+        submit_result=submit_result,
+        reviewed=False,
+    )
+    return True, cached
+
+
+async def import_remote_review_tasks(remote_url: str) -> dict[str, object]:
+    url = review_import_url(remote_url)
+    base_url = remote_base_url(url)
+    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        data = response.json()
+        tasks = data.get("tasks") if isinstance(data, dict) else None
+        if not isinstance(tasks, list):
+            raise ValueError("Remote response must be an object with a tasks list.")
+
+        imported = 0
+        skipped = 0
+        hydrated = 0
+        cached = 0
+        for item in tasks:
+            if not is_unreviewed_review_item(item):
+                skipped += 1
+                continue
+            if isinstance(item, dict) and not task_has_images(item.get("task")):
+                item = await hydrate_remote_review_item(client, base_url, item)
+                if task_has_images(item.get("task")):
+                    hydrated += 1
+            imported_item = False
+            if isinstance(item, dict):
+                imported_item, cached_count = await import_review_item(item)
+                cached += cached_count
+            if imported_item:
+                imported += 1
+            else:
+                skipped += 1
+    return {
+        "status": "imported",
+        "source": url,
+        "imported": imported,
+        "skipped": skipped,
+        "hydrated": hydrated,
+        "cached": cached,
+    }
 
 
 @app.get("/api/health")
@@ -169,6 +329,16 @@ async def automation_status() -> dict[str, object]:
 @app.get("/api/review/tasks")
 async def review_tasks() -> dict[str, object]:
     return {"tasks": list_review_tasks()}
+
+
+@app.post("/api/review/import-remote")
+async def review_import_remote(request: ReviewImportRequest) -> dict[str, object]:
+    env = get_settings()
+    remote_url = request.remoteUrl or env.remote_review_queue_url
+    try:
+        return await import_remote_review_tasks(remote_url or "")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.get("/api/review/submissions/{session_id}")
@@ -338,3 +508,11 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
 @app.get("/api/local/tasks")
 async def local_tasks() -> dict[str, object]:
     return {"tasks": list_tasks()}
+
+
+@app.get("/api/local/images/{filename}")
+async def local_image(filename: str) -> FileResponse:
+    path = cached_image_path(filename)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="Cached image not found.")
+    return FileResponse(path)

@@ -48,6 +48,7 @@ function imageBySide(task: Task | null, side: "QUERY" | "TARGET"): TaskImage | n
 function fullImageUrl(url?: string): string | undefined {
   if (!url) return undefined;
   if (url.startsWith("http")) return url;
+  if (url.startsWith("/api/")) return url;
   return `https://aiclub.uit.edu.vn${url}`;
 }
 
@@ -168,6 +169,7 @@ function App() {
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, Stage2Annotation>>({});
   const [reviewFilter, setReviewFilter] = useState("all");
+  const [remoteReviewUrl, setRemoteReviewUrl] = useState("");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
   const [approvingTaskIds, setApprovingTaskIds] = useState<Set<string>>(new Set());
@@ -297,6 +299,15 @@ function App() {
         }
       }
       return next;
+    });
+  }
+
+  async function importRemoteReviewTasks() {
+    await run("Fetching VPS review queue", async () => {
+      const result = await api.importReviewTasks(remoteReviewUrl);
+      await loadReviewTasks();
+      setMessage(`Imported ${result.imported}, skipped ${result.skipped}`);
+      showToast(`Imported ${result.imported} review tasks`, "success");
     });
   }
 
@@ -568,14 +579,22 @@ function App() {
       <section className="review-panel panel">
         <div className="review-head">
           <h2>Review queue</h2>
-          <select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}>
-            <option value="all">All</option>
-            <option value="not_reviewed">Not reviewed</option>
-            <option value="reviewed">Reviewed</option>
-            <option value="submitted">Submitted</option>
-            <option value="needs_review">Needs review</option>
-            <option value="failed">Failed</option>
-          </select>
+          <div className="review-tools">
+            <input
+              placeholder="VPS URL, e.g. http://1.2.3.4:8000"
+              value={remoteReviewUrl}
+              onChange={(event) => setRemoteReviewUrl(event.target.value)}
+            />
+            <button disabled={busy} onClick={importRemoteReviewTasks}><RefreshCw size={16} />Fetch VPS queue</button>
+            <select value={reviewFilter} onChange={(event) => setReviewFilter(event.target.value)}>
+              <option value="all">All</option>
+              <option value="not_reviewed">Not reviewed</option>
+              <option value="reviewed">Reviewed</option>
+              <option value="submitted">Submitted</option>
+              <option value="needs_review">Needs review</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
         </div>
         <div className="review-list">
           {visibleReviewTasks.map((item) => (

@@ -519,6 +519,18 @@ button:disabled {
   max-width: 220px;
 }
 
+.review-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.review-tools input {
+  min-width: 260px;
+  max-width: 360px;
+}
+
 .review-list {
   display: grid;
   grid-template-columns: 1fr;
