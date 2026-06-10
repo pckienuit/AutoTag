@@ -163,14 +163,19 @@ def list_tasks() -> list[dict[str, Any]]:
     ]
 
 
-def list_review_tasks(limit: int = 500) -> list[dict[str, Any]]:
+def list_review_tasks(limit: int | None = None) -> list[dict[str, Any]]:
     ensure_state()
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
-        rows = conn.execute(
-            "SELECT * FROM review_tasks ORDER BY datetime(updated_at) DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        if limit is None:
+            rows = conn.execute(
+                "SELECT * FROM review_tasks ORDER BY datetime(updated_at) DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM review_tasks ORDER BY datetime(updated_at) DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
     return [
         {
             "taskId": row["task_id"],

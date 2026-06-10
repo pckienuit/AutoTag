@@ -500,6 +500,18 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
             needs_review=True,
             reviewed=False,
         )
+        if request.sessionId:
+            upsert_review_task(
+                str(request.task["id"]),
+                request.sessionId,
+                result.get("task") or request.task,
+                "not_reviewed",
+                annotation.model_dump(),
+                annotation.captionFinal or "",
+                issues,
+                submit_result=result,
+                reviewed=False,
+            )
         return {"status": "submitted", "result": result}
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
