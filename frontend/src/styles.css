@@ -531,6 +531,18 @@ button:disabled {
   max-width: 360px;
 }
 
+.review-count {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
 .review-list {
   display: grid;
   grid-template-columns: 1fr;

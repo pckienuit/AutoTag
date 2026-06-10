@@ -55,6 +55,7 @@ function fullImageUrl(url?: string): string | undefined {
 function cleanFragment(value: string | null | undefined): string {
   let text = String(value || "").trim();
   text = text.replace(/;/g, ",").split(/\s+/).join(" ");
+  text = text.replace(/,\s+(?=(and|or|but|nor|yet|so)\b)/gi, " ");
   return text.replace(/^[ ,.!?]+|[ ,.!?]+$/g, "");
 }
 
@@ -100,7 +101,7 @@ function buildCaption(annotation: Stage2Annotation): string {
 
   if (annotation.caseType === "MULTI") {
     if (!desc1 || !desc2 || !change1 || !change2) return "";
-    return `In the query image, Subject 1 refers to ${desc1}, and Subject 2 refers to ${desc2}. Retrieve target images where Subject 1 ${change1} and Subject 2 ${change2}.`;
+    return `In the query image, Subject 1 refers to ${desc1} and Subject 2 refers to ${desc2}. Retrieve target images where Subject 1 ${change1} and Subject 2 ${change2}.`;
   }
 
   const pair = normalizePair(annotation.pairChangeFinal || annotation.pairChangeRaw);
@@ -121,7 +122,7 @@ function buildCaption(annotation: Stage2Annotation): string {
     suffix = `, with ${extras[0]} and ${extras[1]}`;
   }
 
-  return `In the query image, Subject 1 refers to ${desc1}, and Subject 2 refers to ${desc2}. Retrieve target images where ${pair}${suffix}.`;
+  return `In the query image, Subject 1 refers to ${desc1} and Subject 2 refers to ${desc2}. Retrieve target images where ${pair}${suffix}.`;
 }
 
 function mergeReviewTasks(current: ReviewTask[], incoming: ReviewTask[]): ReviewTask[] {
@@ -594,6 +595,9 @@ function App() {
               <option value="needs_review">Needs review</option>
               <option value="failed">Failed</option>
             </select>
+            <span className="review-count">
+              {visibleReviewTasks.length} / {reviewTasks.length}
+            </span>
           </div>
         </div>
         <div className="review-list">
