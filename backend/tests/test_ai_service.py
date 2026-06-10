@@ -5,7 +5,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from backend.app.ai_service import completion_content
+from backend.app.ai_service import cleanup_stage2_annotation, coerce_annotation, completion_content
 from backend.app.uit_client import UitClient
 
 
@@ -56,6 +56,28 @@ def test_completion_content_reads_nested_gemini_response() -> None:
     })
 
     assert completion_content(response) == "hello world"
+
+
+def test_cleanup_stage2_annotation_removes_comma_before_connectors() -> None:
+    annotation = cleanup_stage2_annotation(
+        coerce_annotation(
+            {
+                "caseType": "SINGLE",
+                "subjects": [
+                    {
+                        "subjectId": 1,
+                        "queryGroupIds": ["1"],
+                        "descQueryFinal": "the man in a hat, and a blue shirt",
+                        "changeTargetFinal": "is sitting, and smiling",
+                    }
+                ],
+            }
+        )
+    )
+
+    subject = annotation.subjects[0]
+    assert ", and" not in subject.descQueryFinal
+    assert ", and" not in subject.changeTargetFinal
 
 
 def test_completion_content_reports_nested_empty_response() -> None:

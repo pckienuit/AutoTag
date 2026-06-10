@@ -6,6 +6,7 @@ import httpx
 
 from .caption import build_caption
 from .models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
+from .text_cleanup import remove_comma_before_connectors
 from .uit_client import uit_client
 
 
@@ -150,7 +151,7 @@ async def generate_annotation(
     url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
     raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
     data = extract_json(raw)
-    annotation = coerce_annotation(data)
+    annotation = cleanup_stage2_annotation(coerce_annotation(data))
     annotation.captionFinal = build_caption(annotation)
     return annotation
 
@@ -191,7 +192,8 @@ User text:
     fixed = (await request_completion(url, settings.openai_compat_api_key, payload, 60.0)).strip()
     if fixed.startswith("```"):
         fixed = fixed.strip("`").strip()
-    return fixed.strip().strip('"').strip("'").strip()
+    fixed = fixed.strip().strip('"').strip("'").strip()
+    return remove_comma_before_connectors(fixed)
 
 
 def chat_payload(
@@ -401,3 +403,14 @@ def coerce_annotation(data: dict[str, Any]) -> Stage2Annotation:
         pairChangeFinal=data.get("pairChangeFinal") or data.get("pairChangeRaw"),
         subjects=normalized_subjects,
     )
+
+
+def cleanup_stage2_annotation(annotation: Stage2Annotation) -> Stage2Annotation:
+    annotation.pairChangeRaw = remove_comma_before_connectors(annotation.pairChangeRaw)
+    annotation.pairChangeFinal = remove_comma_before_connectors(annotation.pairChangeFinal)
+    for subject in annotation.subjects:
+        subject.descQueryRaw = remove_comma_before_connectors(subject.descQueryRaw)
+        subject.descQueryFinal = remove_comma_before_connectors(subject.descQueryFinal)
+        subject.changeTargetRaw = remove_comma_before_connectors(subject.changeTargetRaw)
+        subject.changeTargetFinal = remove_comma_before_connectors(subject.changeTargetFinal)
+    return annotation
