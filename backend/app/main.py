@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from .ai_service import fix_annotation_text, generate_annotation
+from .ai_service import cleanup_stage2_annotation, fix_annotation_text, generate_annotation
 from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
 from .image_cache import cache_task_images, cached_image_path
@@ -351,7 +351,7 @@ async def review_submissions(session_id: str) -> dict[str, object]:
 
 @app.post("/api/review/approve")
 async def approve_review_task(request: ReviewApproveRequest) -> dict[str, object]:
-    annotation = request.annotation
+    annotation = cleanup_stage2_annotation(request.annotation)
     annotation.captionFinal = build_caption(annotation)
     task_id = str(request.task["id"])
     upsert_task(
@@ -412,7 +412,7 @@ async def ai_fix_text(request: FixTextRequest) -> dict[str, object]:
 
 @app.post("/api/uit/save")
 async def save_annotation(request: SyncRequest) -> dict[str, object]:
-    annotation = request.annotation
+    annotation = cleanup_stage2_annotation(request.annotation)
     annotation.captionFinal = build_caption(annotation)
     issues = validate_annotation(annotation)
     reviewed = request.reviewed
@@ -479,7 +479,7 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
 
 @app.post("/api/uit/submit")
 async def submit_annotation(request: SyncRequest) -> dict[str, object]:
-    annotation = request.annotation
+    annotation = cleanup_stage2_annotation(request.annotation)
     annotation.captionFinal = build_caption(annotation)
     issues = validate_annotation(annotation)
     if issues:

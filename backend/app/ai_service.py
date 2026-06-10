@@ -6,7 +6,7 @@ import httpx
 
 from .caption import build_caption
 from .models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
-from .text_cleanup import remove_comma_before_connectors
+from .text_cleanup import cleanup_desc_change_text, remove_comma_before_connectors
 from .uit_client import uit_client
 
 
@@ -26,13 +26,14 @@ Follow these field rules:
 - DESC fields identify who the subject is in the query image, specific enough to distinguish the correct person or group.
 - CHANGE fields describe what that subject is doing or what visible attribute/state they have in the target image.
 - PAIR_CHANGE describes the relation from Subject 1 to Subject 2, and the order must be correct.
+- Never mention the literal label "Subject", "Subject 1", or "Subject 2" inside DESC or CHANGE field values. Write only the visual description fragment, such as "the woman in a yellow shirt" or "is sitting on a bench".
 - For RELATIONAL, individual subject change fields are optional and should be filled only when they are clearly visible.
 - Subject 1 and Subject 2 must be different. A subject may be a group if the query image shows them as a group.
 - Select queryGroupIds from the query image only. Include targetGroupIds only when they clearly match the same subject(s) in the target image.
 - Do not use IDs, technical terms, or overly generic labels like "the person" when the image allows a more specific description.
 - Write concise, natural English fragments, not full sentences inside DESC/CHANGE/PAIR_CHANGE.
 - If multiple people are best treated as one unit, use SINGLE.
-- When Subject 1 is a group, write CHANGE with plural grammar and name the group naturally, such as "the two people in Subject 1 are wearing white shirts and sitting in the stands".
+- When Subject 1 is a group, write CHANGE with plural grammar and name the group naturally, such as "the two people are wearing white shirts and sitting in the stands".
 - If a field is not supported by visible evidence, leave it empty rather than guessing.
 - When choosing DESC details, prioritize visible uniqueness in this order: clothing -> accessories -> hair -> environment.
 - If clothing evidence is sparse or absent, strengthen the description with accessories, then hair, then environment/background only as needed to disambiguate.
@@ -173,6 +174,7 @@ Rules:
 - Avoid overusing commas. Prefer natural connector words where possible, and do not put a comma before connector words.
 - Return a fragment, not a full sentence.
 - Do not add markdown, quotes, labels, JSON, or commentary.
+- Do not mention the literal label "Subject", "Subject 1", or "Subject 2" in DESC or CHANGE output.
 - For DESC, describe who the subject is in the query image.
 - For CHANGE, describe the visible target action, attribute, state, or condition.
 - For PAIR_CHANGE, describe the ordered relation from Subject 1 to Subject 2.
@@ -193,7 +195,9 @@ User text:
     if fixed.startswith("```"):
         fixed = fixed.strip("`").strip()
     fixed = fixed.strip().strip('"').strip("'").strip()
-    return remove_comma_before_connectors(fixed)
+    if "PAIR" in field_name.upper():
+        return remove_comma_before_connectors(fixed)
+    return cleanup_desc_change_text(fixed)
 
 
 def chat_payload(
@@ -409,8 +413,8 @@ def cleanup_stage2_annotation(annotation: Stage2Annotation) -> Stage2Annotation:
     annotation.pairChangeRaw = remove_comma_before_connectors(annotation.pairChangeRaw)
     annotation.pairChangeFinal = remove_comma_before_connectors(annotation.pairChangeFinal)
     for subject in annotation.subjects:
-        subject.descQueryRaw = remove_comma_before_connectors(subject.descQueryRaw)
-        subject.descQueryFinal = remove_comma_before_connectors(subject.descQueryFinal)
-        subject.changeTargetRaw = remove_comma_before_connectors(subject.changeTargetRaw)
-        subject.changeTargetFinal = remove_comma_before_connectors(subject.changeTargetFinal)
+        subject.descQueryRaw = cleanup_desc_change_text(subject.descQueryRaw)
+        subject.descQueryFinal = cleanup_desc_change_text(subject.descQueryFinal)
+        subject.changeTargetRaw = cleanup_desc_change_text(subject.changeTargetRaw)
+        subject.changeTargetFinal = cleanup_desc_change_text(subject.changeTargetFinal)
     return annotation

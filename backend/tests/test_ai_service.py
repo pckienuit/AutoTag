@@ -80,6 +80,28 @@ def test_cleanup_stage2_annotation_removes_comma_before_connectors() -> None:
     assert ", and" not in subject.changeTargetFinal
 
 
+def test_cleanup_stage2_annotation_removes_subject_from_desc_and_change() -> None:
+    annotation = cleanup_stage2_annotation(
+        coerce_annotation(
+            {
+                "caseType": "SINGLE",
+                "subjects": [
+                    {
+                        "subjectId": 1,
+                        "queryGroupIds": ["1"],
+                        "descQueryFinal": "Subject 1 refers to the woman in a yellow shirt",
+                        "changeTargetFinal": "Subject 1 is sitting on a bench",
+                    }
+                ],
+            }
+        )
+    )
+
+    subject = annotation.subjects[0]
+    assert subject.descQueryFinal == "the woman in a yellow shirt"
+    assert subject.changeTargetFinal == "is sitting on a bench"
+
+
 def test_completion_content_reports_nested_empty_response() -> None:
     response = response_json({
         "response": {
