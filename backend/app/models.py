@@ -11,6 +11,7 @@ class RuntimeSettings(BaseModel):
     openai_compat_api_key: str = ""
     openai_compat_model: str = "gpt-4o-mini"
     auto_submit_enabled: bool = False
+    ai_double_check_enabled: bool = True
 
 
 AutomationMode = Literal["all_open", "one_session", "fixed_limit", "current_task"]

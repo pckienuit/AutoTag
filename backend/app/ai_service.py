@@ -1,10 +1,14 @@
+import base64
 import json
+import mimetypes
 from json import JSONDecodeError
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
 from .caption import build_caption
+from .image_cache import cached_image_path
 from .models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
 from .text_cleanup import cleanup_desc_change_text, remove_comma_before_connectors
 from .uit_client import uit_client
@@ -60,6 +64,41 @@ Before responding, verify that the JSON is valid, the case is consistent with th
 """
 
 
+REVIEW_PROMPT = """
+You are a strict reviewer for CPR image-pair annotations.
+Review the proposed annotation against the images, boxes, and rules. Do not rewrite everything.
+
+Return only a valid JSON object with this shape:
+{
+  "approved": true | false,
+  "issues": ["short concrete issue"],
+  "patch": {
+    "caseType": "SINGLE | MULTI | RELATIONAL",
+    "relationalSubject1ChangeEnabled": true | false,
+    "relationalSubject2ChangeEnabled": true | false,
+    "pairChangeRaw": "string|null",
+    "pairChangeFinal": "string|null",
+    "subjects": [
+      {
+        "subjectId": 1,
+        "queryGroupIds": ["id"],
+        "targetGroupIds": ["id"],
+        "descQueryRaw": "English fragment",
+        "descQueryFinal": "English fragment",
+        "changeTargetRaw": "English fragment",
+        "changeTargetFinal": "English fragment"
+      }
+    ]
+  }
+}
+
+Use an empty patch object when the annotation is already good.
+Patch only fields that are clearly wrong or incomplete. Keep good fields unchanged.
+Never mention the literal label "Subject", "Subject 1", or "Subject 2" inside DESC or CHANGE field values.
+Do not add unsupported details. Prefer leaving a field unchanged over guessing.
+"""
+
+
 def image_by_side(task: dict[str, Any], side: str) -> dict[str, Any] | None:
     wanted = {"QUERY", "A"} if side == "QUERY" else {"TARGET", "B"}
     for image in task.get("images", []):
@@ -85,6 +124,52 @@ def box_summary(image: dict[str, Any] | None) -> list[dict[str, Any]]:
             }
         )
     return summary
+
+
+async def task_image_as_data_url(
+    image_url: str,
+    boxes: list[dict[str, Any]] | None = None,
+) -> str:
+    if image_url.startswith("/api/local/images/"):
+        filename = unquote(image_url.rsplit("/", 1)[-1])
+        path = cached_image_path(filename)
+        image_bytes = path.read_bytes()
+        content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
+        if content_type.startswith("image/"):
+            image_bytes = uit_client._prepare_image(image_bytes, 512, 60, boxes)
+            content_type = "image/jpeg"
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+    return await uit_client.image_as_data_url(image_url, boxes=boxes)
+
+
+async def append_task_images(
+    content: list[dict[str, Any]],
+    query: dict[str, Any] | None,
+    target: dict[str, Any] | None,
+) -> None:
+    for label, image in (("Query image", query), ("Target image", target)):
+        if image and image.get("imageUrl"):
+            image_url = str(image["imageUrl"])
+            content.append({"type": "text", "text": label})
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": await task_image_as_data_url(image_url)},
+                }
+            )
+            content.append({"type": "text", "text": f"{label} with bounding boxes"})
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": await task_image_as_data_url(
+                            image_url,
+                            boxes=box_summary(image),
+                        )
+                    },
+                }
+            )
 
 
 async def generate_annotation(
@@ -128,17 +213,7 @@ async def generate_annotation(
             ),
         }
     ]
-    for label, image in (("Query image", query), ("Target image", target)):
-        if image and image.get("imageUrl"):
-            data_url = await uit_client.image_as_data_url(str(image["imageUrl"]))
-            content.append({"type": "text", "text": label})
-            content.append({"type": "image_url", "image_url": {"url": data_url}})
-            boxed_data_url = await uit_client.image_as_data_url(
-                str(image["imageUrl"]),
-                boxes=box_summary(image),
-            )
-            content.append({"type": "text", "text": f"{label} with bounding boxes"})
-            content.append({"type": "image_url", "image_url": {"url": boxed_data_url}})
+    await append_task_images(content, query, target)
 
     payload = chat_payload(
         settings.openai_compat_model,
@@ -154,7 +229,124 @@ async def generate_annotation(
     data = extract_json(raw)
     annotation = cleanup_stage2_annotation(coerce_annotation(data))
     annotation.captionFinal = build_caption(annotation)
+    if settings.ai_double_check_enabled:
+        annotation = await review_annotation(task, annotation, settings, notes)
     return annotation
+
+
+async def review_annotation(
+    task: dict[str, Any],
+    annotation: Stage2Annotation,
+    settings: RuntimeSettings,
+    notes: str = "",
+) -> Stage2Annotation:
+    query = image_by_side(task, "QUERY")
+    target = image_by_side(task, "TARGET")
+    proposed = cleanup_stage2_annotation(annotation)
+    proposed.captionFinal = build_caption(proposed)
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": json.dumps(
+                {
+                    "instruction": "Review this proposed CPR annotation and return a minimal JSON patch.",
+                    "queryBoxes": box_summary(query),
+                    "targetBoxes": box_summary(target),
+                    "userNotes": notes,
+                    "proposedAnnotation": proposed.model_dump(),
+                    "proposedCaption": proposed.captionFinal,
+                },
+                ensure_ascii=True,
+            ),
+        }
+    ]
+    await append_task_images(content, query, target)
+    payload = chat_payload(
+        settings.openai_compat_model,
+        temperature=0.0,
+        messages=[
+            {"role": "system", "content": f"{SYSTEM_PROMPT.strip()}\n\n{REVIEW_PROMPT.strip()}"},
+            {"role": "user", "content": content},
+        ],
+        json_object=True,
+    )
+    url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
+    raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
+    review = extract_json(raw)
+    checked = apply_review_patch(proposed, review)
+    checked.captionFinal = build_caption(checked)
+    return checked
+
+
+def apply_review_patch(annotation: Stage2Annotation, review: dict[str, Any]) -> Stage2Annotation:
+    patch = review.get("patch")
+    if not isinstance(patch, dict):
+        patch = {}
+    if not patch:
+        cleaned = cleanup_stage2_annotation(annotation)
+        cleaned.captionFinal = build_caption(cleaned)
+        add_review_edit(cleaned, review)
+        return cleaned
+
+    merged = annotation.model_dump()
+    for key in (
+        "caseType",
+        "relationalSubject1ChangeEnabled",
+        "relationalSubject2ChangeEnabled",
+        "pairChangeRaw",
+        "pairChangeFinal",
+    ):
+        if key in patch:
+            merged[key] = patch[key]
+
+    subject_patches = patch.get("subjects")
+    if isinstance(subject_patches, list):
+        subjects_by_id: dict[int, dict[str, Any]] = {}
+        for subject in merged.get("subjects", []):
+            if isinstance(subject, dict):
+                try:
+                    subjects_by_id[int(subject.get("subjectId", len(subjects_by_id) + 1))] = dict(subject)
+                except (TypeError, ValueError):
+                    continue
+        for subject_patch in subject_patches:
+            if not isinstance(subject_patch, dict):
+                continue
+            try:
+                subject_id = int(subject_patch.get("subjectId", 1))
+            except (TypeError, ValueError):
+                subject_id = 1
+            current = subjects_by_id.get(subject_id, {"subjectId": subject_id, "targetConstraintEnabled": True})
+            for key in (
+                "queryGroupIds",
+                "targetGroupIds",
+                "descQueryRaw",
+                "descQueryFinal",
+                "changeTargetRaw",
+                "changeTargetFinal",
+            ):
+                if key in subject_patch:
+                    current[key] = subject_patch[key]
+            subjects_by_id[subject_id] = current
+        merged["subjects"] = [subjects_by_id[key] for key in sorted(subjects_by_id)]
+
+    checked = cleanup_stage2_annotation(coerce_annotation(merged))
+    checked.llmEdits = list(annotation.llmEdits)
+    add_review_edit(checked, review)
+    checked.captionFinal = build_caption(checked)
+    return checked
+
+
+def add_review_edit(annotation: Stage2Annotation, review: dict[str, Any]) -> None:
+    issues = review.get("issues")
+    if not isinstance(issues, list):
+        issues = []
+    annotation.llmEdits.append(
+        {
+            "type": "double_check",
+            "approved": bool(review.get("approved", not issues)),
+            "issues": [str(issue) for issue in issues],
+        }
+    )
 
 
 async def fix_annotation_text(text: str, field: str, settings: RuntimeSettings) -> str:
@@ -224,13 +416,15 @@ def chat_payload(
 async def request_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> str:
     response = await post_completion(url, api_key, payload, timeout)
     try:
-        return completion_content(response)
+        content = completion_content(response)
+        if content.strip():
+            return content
     except ValueError as exc:
         if "no text output" not in str(exc):
             raise
-        retry_payload = retry_chat_payload(payload)
-        retry_response = await post_completion(url, api_key, retry_payload, timeout)
-        return completion_content(retry_response)
+    retry_payload = retry_chat_payload(payload)
+    retry_response = await post_completion(url, api_key, retry_payload, timeout)
+    return completion_content(retry_response)
 
 
 async def post_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> httpx.Response:

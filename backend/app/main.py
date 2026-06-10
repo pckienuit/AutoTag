@@ -22,6 +22,7 @@ def runtime_settings() -> RuntimeSettings:
         openai_compat_api_key=env.openai_compat_api_key,
         openai_compat_model=env.openai_compat_model,
         auto_submit_enabled=env.auto_submit_enabled,
+        ai_double_check_enabled=env.ai_double_check_enabled,
     )
 
 

@@ -5,7 +5,8 @@ import httpx
 import pytest
 from PIL import Image
 
-from backend.app.ai_service import cleanup_stage2_annotation, coerce_annotation, completion_content
+from backend.app.ai_service import apply_review_patch, cleanup_stage2_annotation, coerce_annotation, completion_content
+from backend.app.models import Stage2Annotation, SubjectAnnotation
 from backend.app.uit_client import UitClient
 
 
@@ -100,6 +101,42 @@ def test_cleanup_stage2_annotation_removes_subject_from_desc_and_change() -> Non
     subject = annotation.subjects[0]
     assert subject.descQueryFinal == "the woman in a yellow shirt"
     assert subject.changeTargetFinal == "is sitting on a bench"
+
+
+def test_apply_review_patch_merges_minimal_subject_changes() -> None:
+    annotation = Stage2Annotation(
+        caseType="SINGLE",
+        subjects=[
+            SubjectAnnotation(
+                subjectId=1,
+                queryGroupIds=["1"],
+                descQueryFinal="the person in blue",
+                changeTargetFinal="is walking",
+            )
+        ],
+    )
+
+    checked = apply_review_patch(
+        annotation,
+        {
+            "approved": False,
+            "issues": ["DESC is too generic"],
+            "patch": {
+                "subjects": [
+                    {
+                        "subjectId": 1,
+                        "descQueryFinal": "Subject 1 refers to the woman in a blue jacket",
+                    }
+                ]
+            },
+        },
+    )
+
+    subject = checked.subjects[0]
+    assert subject.queryGroupIds == ["1"]
+    assert subject.descQueryFinal == "the woman in a blue jacket"
+    assert subject.changeTargetFinal == "is walking"
+    assert checked.llmEdits[-1]["type"] == "double_check"
 
 
 def test_completion_content_reports_nested_empty_response() -> None:
