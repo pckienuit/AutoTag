@@ -1,3 +1,4 @@
+import asyncio
 import json
 import io
 
@@ -5,8 +6,14 @@ import httpx
 import pytest
 from PIL import Image
 
-from backend.app.ai_service import apply_review_patch, cleanup_stage2_annotation, coerce_annotation, completion_content
-from backend.app.models import Stage2Annotation, SubjectAnnotation
+from backend.app.ai_service import (
+    apply_review_patch,
+    cleanup_stage2_annotation,
+    coerce_annotation,
+    completion_content,
+    review_annotation,
+)
+from backend.app.models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
 from backend.app.uit_client import UitClient
 
 
@@ -137,6 +144,61 @@ def test_apply_review_patch_merges_minimal_subject_changes() -> None:
     assert subject.descQueryFinal == "the woman in a blue jacket"
     assert subject.changeTargetFinal == "is walking"
     assert checked.llmEdits[-1]["type"] == "double_check"
+
+
+def test_review_annotation_uses_review_model(monkeypatch) -> None:
+    captured: dict[str, str] = {}
+
+    async def fake_post_completion(
+        url: str,
+        api_key: str,
+        payload: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        captured["url"] = url
+        captured["api_key"] = api_key
+        captured["model"] = payload["model"]
+        return response_json(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {"approved": True, "issues": [], "patch": {}}
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setattr("backend.app.ai_service.post_completion", fake_post_completion)
+    annotation = Stage2Annotation(
+        caseType="SINGLE",
+        subjects=[
+            SubjectAnnotation(
+                subjectId=1,
+                queryGroupIds=["1"],
+                descQueryFinal="the woman in a blue jacket",
+                changeTargetFinal="is walking",
+            )
+        ],
+    )
+    settings = RuntimeSettings(
+        openai_compat_base_url="https://example.test/v1",
+        openai_compat_api_key="test-key",
+        openai_compat_model="small-model",
+        openai_compat_review_model="ag/gemini-pro-agent",
+    )
+
+    checked = asyncio.run(review_annotation({"images": []}, annotation, settings))
+
+    assert captured == {
+        "url": "https://example.test/v1/chat/completions",
+        "api_key": "test-key",
+        "model": "ag/gemini-pro-agent",
+    }
+    assert checked.llmEdits[-1]["approved"] is True
 
 
 def test_completion_content_reports_nested_empty_response() -> None:

@@ -46,12 +46,20 @@ Follow these field rules:
 - Do not stop at a short phrase like "the man wearing a gray shirt"; expand it with more visible details, such as "the man wearing a gray shirt with white text, standing near the monument".
 - Count separate visible cues such as clothing color/type, text or pattern on clothing, accessories, hairstyle, pose, relative position, nearby object, and immediate background/environment.
 - Use simple English vocabulary, ideally below B1 level. Prefer plain, common words over advanced or academic wording.
+- All DESC, CHANGE, and PAIR_CHANGE text must be English. Translate any non-English user wording into simple English before using it.
 - Keep phrasing natural and clear, but avoid rare adjectives or complex sentence structures when a simpler phrase says the same thing.
 - Avoid overusing commas. Prefer natural connector words where possible.
 - Use commas only when they make the grammar clearer, such as separating a list of action fragments: "is wearing blue jeans, not wearing a hat, and placing his hands behind his back".
 - Do not stack fragments without connectors, such as "is wearing blue jeans not wearing a hat hands placed behind back".
+- Separate adjacent clothing, accessory, action, and pose fragments with connectors or clear commas. Do not write fragments like "a red jacket grey helmet", "wearing glasses a white shirt", or "is wearing red pants a pink backpack".
+- Do not leave dangling or unfinished fragments such as "holding a", "with a", or "standing near". If the object or context is unclear, omit that unfinished part.
 - Avoid a comma before simple connector words when the sentence already reads clearly without it.
 - For extra context about another visible person or object, use a connected phrase such as "with a man between them holding a yellow drink" instead of attaching a loose clause.
+- When the subject is a group, use plural grammar in CHANGE and refer to the group naturally, such as "the two people are wearing white shirts".
+- For left/right hands or looking direction, use the subject's own left/right, not the viewer's left/right. If uncertain, use neutral wording such as "one hand" or "looking to one side".
+- If the target context helps distinguish the correct image, name the concrete visible object or place, such as "standing in front of a memorial wall", instead of using only a vague setting.
+- If the key target signal is a spatial or interaction relation between two subjects, choose RELATIONAL instead of MULTI.
+- Read the final caption pattern before responding. It must sound grammatical after "Subject 1" or "Subject 2" is inserted.
 - Vary the wording a little when the images allow it, so similar tasks do not always produce the exact same phrasing.
 - Prefer human-like, direct descriptions grounded in the image over rigid template-heavy wording, while still keeping the final caption valid and easy to read.
 
@@ -262,7 +270,7 @@ async def review_annotation(
     ]
     await append_task_images(content, query, target)
     payload = chat_payload(
-        settings.openai_compat_model,
+        settings.openai_compat_review_model,
         temperature=0.0,
         messages=[
             {"role": "system", "content": f"{SYSTEM_PROMPT.strip()}\n\n{REVIEW_PROMPT.strip()}"},

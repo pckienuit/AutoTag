@@ -10,6 +10,7 @@ class RuntimeSettings(BaseModel):
     openai_compat_base_url: str = "https://api.openai.com/v1"
     openai_compat_api_key: str = ""
     openai_compat_model: str = "gpt-4o-mini"
+    openai_compat_review_model: str = "ag/gemini-pro-agent"
     auto_submit_enabled: bool = False
     ai_double_check_enabled: bool = True
 

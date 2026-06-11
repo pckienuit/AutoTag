@@ -170,6 +170,7 @@ function App() {
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, Stage2Annotation>>({});
   const [reviewFilter, setReviewFilter] = useState("all");
+  const [reviewCaseFilter, setReviewCaseFilter] = useState<"all" | CaseType>("all");
   const [remoteReviewUrl, setRemoteReviewUrl] = useState("");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
@@ -436,7 +437,11 @@ function App() {
     }
   }
 
-  const visibleReviewTasks = reviewTasks.filter((item) => reviewFilter === "all" || item.status === reviewFilter);
+  const visibleReviewTasks = reviewTasks.filter((item) => {
+    const statusMatches = reviewFilter === "all" || item.status === reviewFilter;
+    const caseMatches = reviewCaseFilter === "all" || reviewDraftFor(item).caseType === reviewCaseFilter;
+    return statusMatches && caseMatches;
+  });
   const isReviewTask = activeTaskMode === "review";
   const isManualTask = activeTaskMode === "manual";
 
@@ -594,6 +599,12 @@ function App() {
               <option value="submitted">Submitted</option>
               <option value="needs_review">Needs review</option>
               <option value="failed">Failed</option>
+            </select>
+            <select value={reviewCaseFilter} onChange={(event) => setReviewCaseFilter(event.target.value as "all" | CaseType)}>
+              <option value="all">All cases</option>
+              <option value="SINGLE">SINGLE</option>
+              <option value="MULTI">MULTI</option>
+              <option value="RELATIONAL">RELATIONAL</option>
             </select>
             <span className="review-count">
               {visibleReviewTasks.length} / {reviewTasks.length}
