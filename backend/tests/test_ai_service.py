@@ -11,6 +11,7 @@ from backend.app.ai_service import (
     cleanup_stage2_annotation,
     coerce_annotation,
     completion_content,
+    post_completion,
     review_annotation,
 )
 from backend.app.models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
@@ -199,6 +200,55 @@ def test_review_annotation_uses_review_model(monkeypatch) -> None:
         "model": "ag/gemini-pro-agent",
     }
     assert checked.llmEdits[-1]["approved"] is True
+
+
+def test_post_completion_retries_transient_status_with_backoff(monkeypatch) -> None:
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        async def post(self, url: str, headers: dict, json: dict) -> httpx.Response:
+            calls.append(url)
+            request = httpx.Request("POST", url)
+            if len(calls) == 1:
+                return httpx.Response(
+                    429,
+                    headers={"retry-after": "0.25"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                content=b'{"choices":[{"message":{"content":"ok"}}]}',
+                request=request,
+            )
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("backend.app.ai_service.httpx.AsyncClient", FakeClient)
+    monkeypatch.setattr("backend.app.ai_service.asyncio.sleep", fake_sleep)
+
+    response = asyncio.run(
+        post_completion(
+            "https://example.test/v1/chat/completions",
+            "test-key",
+            {"model": "review-model"},
+            30.0,
+        )
+    )
+
+    assert response.status_code == 200
+    assert len(calls) == 2
+    assert sleeps == [0.25]
 
 
 def test_completion_content_reports_nested_empty_response() -> None:

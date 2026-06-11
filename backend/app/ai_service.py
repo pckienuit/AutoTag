@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import json
 import mimetypes
 from json import JSONDecodeError
@@ -12,6 +13,11 @@ from .image_cache import cached_image_path
 from .models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
 from .text_cleanup import cleanup_desc_change_text, remove_comma_before_connectors
 from .uit_client import uit_client
+
+
+TRANSIENT_MODEL_STATUSES = {429, 502, 503, 504}
+MODEL_RETRY_ATTEMPTS = 4
+MODEL_RETRY_BASE_DELAY_SECONDS = 2.0
 
 
 SYSTEM_PROMPT = """
@@ -435,15 +441,33 @@ async def request_completion(url: str, api_key: str, payload: dict[str, Any], ti
     return completion_content(retry_response)
 
 
+def retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass
+    return MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+
+
 async def post_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> httpx.Response:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            json=payload,
-        )
-        response.raise_for_status()
-        return response
+        for attempt in range(1, MODEL_RETRY_ATTEMPTS + 1):
+            response = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json=payload,
+            )
+            if (
+                response.status_code in TRANSIENT_MODEL_STATUSES
+                and attempt < MODEL_RETRY_ATTEMPTS
+            ):
+                await asyncio.sleep(retry_delay_seconds(response, attempt))
+                continue
+            response.raise_for_status()
+            return response
+    raise RuntimeError("Model request retry loop exited unexpectedly.")
 
 
 def retry_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
