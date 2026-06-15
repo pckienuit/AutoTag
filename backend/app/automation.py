@@ -1,5 +1,7 @@
 import asyncio
+import math
 import random
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -29,6 +31,7 @@ class AutomationState:
     current_task_id: str | None = None
     message: str = "Idle"
     next_delay_seconds: int | None = None
+    next_delay_until: float | None = None
 
 
 class AutomationRunner:
@@ -38,7 +41,15 @@ class AutomationRunner:
         self.task: asyncio.Task[None] | None = None
 
     def status(self) -> dict[str, Any]:
-        return asdict(self.state)
+        data = asdict(self.state)
+        data["next_delay_seconds"] = self._next_delay_seconds()
+        return data
+
+    def _next_delay_seconds(self) -> int | None:
+        if self.state.next_delay_until is None:
+            return None
+        remaining = math.ceil(self.state.next_delay_until - time.time())
+        return max(0, remaining)
 
     def start(self, mode: AutomationMode, limit: int | None = None) -> dict[str, Any]:
         if self.task and not self.task.done():
@@ -52,6 +63,8 @@ class AutomationRunner:
     def stop(self) -> dict[str, Any]:
         self.state.stop_requested = True
         self.state.message = "Stop requested"
+        self.state.next_delay_seconds = None
+        self.state.next_delay_until = None
         if self.task and not self.task.done():
             self.task.cancel()
         return self.status()
@@ -96,6 +109,7 @@ class AutomationRunner:
         finally:
             self.state.running = False
             self.state.next_delay_seconds = None
+            self.state.next_delay_until = None
 
     async def _session_candidates(self, mode: AutomationMode) -> list[dict[str, Any]]:
         data = await uit_client.sessions()
@@ -175,8 +189,8 @@ class AutomationRunner:
 
     async def _sleep_between_submissions(self) -> None:
         delay = random.randint(DELAY_MIN_SECONDS, DELAY_MAX_SECONDS)
-        for remaining in range(delay, 0, -1):
-            self.state.next_delay_seconds = remaining
-            self.state.message = f"Waiting {remaining} seconds before next task"
-            await asyncio.sleep(1)
+        self.state.next_delay_until = time.time() + delay
+        self.state.message = f"Waiting {delay} seconds before next task"
+        await asyncio.sleep(delay)
         self.state.next_delay_seconds = None
+        self.state.next_delay_until = None

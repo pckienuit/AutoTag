@@ -80,6 +80,7 @@ export interface AutomationStatus {
   current_task_id: string | null;
   message: string;
   next_delay_seconds: number | null;
+  next_delay_until: number | null;
 }
 
 export interface ReviewTask {

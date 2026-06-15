@@ -32,7 +32,10 @@ export const api = {
     }),
   stopAutomation: () => request<AutomationStatus>("/api/automation/stop", { method: "POST" }),
   automationStatus: () => request<AutomationStatus>("/api/automation/status"),
-  reviewTasks: () => request<{ tasks: ReviewTask[] }>("/api/review/tasks"),
+  reviewTasks: (status = "active", limit = 120) =>
+    request<{ tasks: ReviewTask[]; limit: number; total: number }>(
+      `/api/review/tasks?status=${encodeURIComponent(status)}&limit=${limit}`
+    ),
   importReviewTasks: (remoteUrl: string) =>
     request<{ status: string; source: string; imported: number; skipped: number }>("/api/review/import-remote", {
       method: "POST",

@@ -7,14 +7,24 @@ from backend.app.automation import AutomationRunner
 from backend.app.errors import error_detail
 
 
-def test_delay_continues_until_timer_finishes(monkeypatch) -> None:
-    monkeypatch.setattr(automation.random, "randint", lambda start, end: 1)
+def test_delay_sleeps_once_and_reports_deadline(monkeypatch) -> None:
+    sleeps: list[int] = []
+
+    monkeypatch.setattr(automation.random, "randint", lambda start, end: 3)
+    monkeypatch.setattr(automation.time, "time", lambda: 1000.0)
+
+    async def fake_sleep(delay: int) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(automation.asyncio, "sleep", fake_sleep)
     runner = AutomationRunner(lambda: None)
 
     asyncio.run(runner._sleep_between_submissions())
 
+    assert sleeps == [3]
     assert runner.state.next_delay_seconds is None
-    assert runner.state.message == "Waiting 1 seconds before next task"
+    assert runner.state.next_delay_until is None
+    assert runner.state.message == "Waiting 3 seconds before next task"
 
 
 def test_error_detail_names_empty_httpx_timeout() -> None:

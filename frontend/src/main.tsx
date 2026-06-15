@@ -40,6 +40,9 @@ const emptyAnnotation = (): Stage2Annotation => ({
   subjects: [emptySubject(1)]
 });
 
+const REVIEW_HYDRATE_BATCH_SIZE = 6;
+const REVIEW_HYDRATE_MAX_ITEMS = 24;
+
 function imageBySide(task: Task | null, side: "QUERY" | "TARGET"): TaskImage | null {
   const wanted = side === "QUERY" ? new Set(["QUERY", "A"]) : new Set(["TARGET", "B"]);
   return task?.images?.find((image) => wanted.has(String(image.side).toUpperCase())) ?? null;
@@ -157,6 +160,15 @@ function toggleSyncedGroupId(subject: SubjectAnnotation, boxId: string): Pick<Su
   return syncGroupIds([...currentIds]);
 }
 
+function delaySeconds(status: AutomationStatus | null, nowMs: number): number | null {
+  if (!status) return null;
+  if (typeof status.next_delay_until === "number") {
+    const seconds = Math.ceil(status.next_delay_until - nowMs / 1000);
+    return seconds > 0 ? seconds : null;
+  }
+  return status.next_delay_seconds;
+}
+
 function App() {
   const [sessionId, setSessionId] = useState("");
   const [task, setTask] = useState<Task | null>(null);
@@ -167,10 +179,12 @@ function App() {
   const [automationMode, setAutomationMode] = useState<AutomationMode>("all_open");
   const [automationLimit, setAutomationLimit] = useState(10);
   const [automationStatus, setAutomationStatus] = useState<AutomationStatus | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, Stage2Annotation>>({});
   const [reviewFilter, setReviewFilter] = useState("all");
   const [reviewCaseFilter, setReviewCaseFilter] = useState<"all" | CaseType>("all");
+  const [reviewTotal, setReviewTotal] = useState(0);
   const [remoteReviewUrl, setRemoteReviewUrl] = useState("");
   const [message, setMessage] = useState("Ready");
   const [busy, setBusy] = useState(false);
@@ -181,18 +195,22 @@ function App() {
   const hydratingReviewTaskIds = useRef(new Set<string>());
 
   const caption = useMemo(() => buildCaption(annotation), [annotation]);
+  const automationDelaySeconds = delaySeconds(automationStatus, nowMs);
 
   useEffect(() => {
-    void loadAutoTask();
     void refreshAutomationStatus();
     void loadReviewTasks();
   }, []);
 
   useEffect(() => {
+    void loadReviewTasks(reviewFilter);
+  }, [reviewFilter]);
+
+  useEffect(() => {
     if (!automationStatus?.running) return;
     const statusTimer = setInterval(() => {
       void refreshAutomationStatus();
-    }, automationStatus.next_delay_seconds ? 1000 : 5000);
+    }, 5000);
     const reviewTimer = setInterval(() => {
       void loadReviewTasks();
     }, 5000);
@@ -200,7 +218,20 @@ function App() {
       clearInterval(statusTimer);
       clearInterval(reviewTimer);
     };
-  }, [automationStatus?.running, automationStatus?.next_delay_seconds]);
+  }, [automationStatus?.running]);
+
+  useEffect(() => {
+    const deadline = automationStatus?.next_delay_until;
+    if (typeof deadline !== "number") return;
+    const timer = setInterval(() => {
+      const currentMs = Date.now();
+      setNowMs(currentMs);
+      if (currentMs / 1000 >= deadline) {
+        clearInterval(timer);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [automationStatus?.next_delay_until]);
 
   function showToast(msg: string, type: "success" | "error" | "info" = "info") {
     setToast({ message: msg, type });
@@ -281,12 +312,22 @@ function App() {
     setAutomationStatus(status);
   }
 
-  async function loadReviewTasks() {
-    const data = await api.reviewTasks();
+  async function loadReviewTasks(filter = reviewFilter) {
+    const serverStatus = filter === "all" ? "active" : filter;
+    const data = await api.reviewTasks(serverStatus);
     setReviewTasks((current) => mergeReviewTasks(current, data.tasks));
-    void hydrateReviewTaskImages(data.tasks);
+    setReviewTotal(data.total);
+    if (filter !== "reviewed") {
+      void hydrateReviewTaskImages(data.tasks);
+    }
     setReviewDrafts((current) => {
       const next = { ...current };
+      const activeTaskIds = new Set(data.tasks.map((item) => item.taskId));
+      for (const taskId of Object.keys(next)) {
+        if (!activeTaskIds.has(taskId) && !dirtyReviewDraftIds.current.has(taskId)) {
+          delete next[taskId];
+        }
+      }
       for (const item of data.tasks) {
         const incoming = item.annotation;
         if (!next[item.taskId]) {
@@ -314,21 +355,30 @@ function App() {
   }
 
   async function hydrateReviewTaskImages(items: ReviewTask[]) {
-    const missingImageItems = items.filter((item) => !item.task.images?.length && !hydratingReviewTaskIds.current.has(item.taskId));
+    const missingImageItems = items
+      .filter((item) => !item.task.images?.length && !hydratingReviewTaskIds.current.has(item.taskId))
+      .slice(0, REVIEW_HYDRATE_MAX_ITEMS);
     if (!missingImageItems.length) return;
     for (const item of missingImageItems) {
       hydratingReviewTaskIds.current.add(item.taskId);
     }
-    const hydratedItems = await Promise.all(
-      missingImageItems.map(async (item) => {
-        try {
-          const data = await api.task(item.sessionId, item.taskId);
-          return { taskId: item.taskId, task: data.task };
-        } catch {
-          return null;
-        }
-      })
-    );
+
+    const hydratedItems: Array<{ taskId: string; task: Task } | null> = [];
+    for (let index = 0; index < missingImageItems.length; index += REVIEW_HYDRATE_BATCH_SIZE) {
+      const batch = missingImageItems.slice(index, index + REVIEW_HYDRATE_BATCH_SIZE);
+      const batchItems = await Promise.all(
+        batch.map(async (item) => {
+          try {
+            const data = await api.task(item.sessionId, item.taskId);
+            return { taskId: item.taskId, task: data.task };
+          } catch {
+            return null;
+          }
+        })
+      );
+      hydratedItems.push(...batchItems);
+    }
+
     for (const item of missingImageItems) {
       hydratingReviewTaskIds.current.delete(item.taskId);
     }
@@ -485,7 +535,7 @@ function App() {
           <div className="automation-status">
             <span>{automationStatus?.message ?? "Idle"}</span>
             <span>Done {automationStatus?.processed ?? 0} / Submitted {automationStatus?.submitted ?? 0} / Failed {automationStatus?.failed ?? 0} / Review {automationStatus?.needs_review ?? 0}</span>
-            {automationStatus?.next_delay_seconds ? <span>Next in {automationStatus.next_delay_seconds}s</span> : null}
+            {automationDelaySeconds ? <span>Next in {automationDelaySeconds}s</span> : null}
           </div>
         </div>
       </section>
@@ -607,7 +657,7 @@ function App() {
               <option value="RELATIONAL">RELATIONAL</option>
             </select>
             <span className="review-count">
-              {visibleReviewTasks.length} / {reviewTasks.length}
+              {visibleReviewTasks.length} / {reviewTotal || reviewTasks.length}
             </span>
           </div>
         </div>
@@ -818,7 +868,7 @@ function ReviewThumb({
       {image?.imageUrl ? (
         <div className="review-thumb-frame">
           <div className="review-image-wrap">
-            <img src={fullImageUrl(image.imageUrl)} alt={title} />
+            <img src={fullImageUrl(image.imageUrl)} alt={title} loading="lazy" decoding="async" />
             {boxes.map((box) => {
               const id = String(box.groupUid || box.label || box.id);
               const owner = ownerForBox(id);
@@ -891,6 +941,8 @@ function ImagePane({
           <img
             src={fullImageUrl(image.imageUrl)}
             alt={title}
+            loading="lazy"
+            decoding="async"
             style={{
               display: "block",
               maxWidth: "100%",

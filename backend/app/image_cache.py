@@ -57,11 +57,11 @@ async def cache_image(image_url: str) -> str:
 
     await uit_client.ensure_login()
     absolute_url = urljoin(uit_client.base_url, image_url)
-    response = await uit_client.client.get(absolute_url)
+    response = await uit_client.request_with_retry("GET", absolute_url)
     if response.status_code == 401:
         uit_client._authenticated_until = 0.0
         await uit_client.login()
-        response = await uit_client.client.get(absolute_url)
+        response = await uit_client.request_with_retry("GET", absolute_url)
     raise_for_status_with_body(response)
 
     content_type = response.headers.get("content-type")

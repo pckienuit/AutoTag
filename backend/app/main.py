@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -272,6 +272,7 @@ async def uit_auto_current_task() -> dict[str, object]:
             task_data = await uit_client.current_task(session_id)
             task = task_data.get("task")
             if task:
+                task, _ = await cache_task_images(task)
                 upsert_task(str(task["id"]), session_id, task, status="fetched")
                 return {"session": session, "sessionId": session_id, "task": task}
         return {"session": None, "sessionId": None, "task": None}
@@ -285,6 +286,8 @@ async def uit_current_task(session_id: str) -> dict[str, object]:
         data = await uit_client.current_task(session_id)
         task = data.get("task")
         if task:
+            task, _ = await cache_task_images(task)
+            data = {**data, "task": task}
             upsert_task(str(task["id"]), session_id, task, status="fetched")
         return data
     except Exception as exc:
@@ -305,6 +308,8 @@ async def uit_task(session_id: str, task_id: str) -> dict[str, object]:
         data = await uit_client.task(task_id, session_id)
         task = data.get("task")
         if task:
+            task, _ = await cache_task_images(task)
+            data = {**data, "task": task}
             upsert_task(str(task["id"]), session_id, task, status="fetched")
         return data
     except Exception as exc:
@@ -330,8 +335,19 @@ async def automation_status() -> dict[str, object]:
 
 
 @app.get("/api/review/tasks")
-async def review_tasks() -> dict[str, object]:
-    return {"tasks": list_review_tasks()}
+async def review_tasks(
+    status: str = "active",
+    limit: int = Query(default=120, ge=1, le=1000),
+    include_reviewed: bool = False,
+) -> dict[str, object]:
+    task_status = None if status in {"active", "all"} else status
+    include_done = include_reviewed or status in {"all", "reviewed"}
+    tasks = list_review_tasks(limit=limit, status=task_status, include_reviewed=include_done)
+    return {
+        "tasks": tasks,
+        "limit": limit,
+        "total": len(tasks),
+    }
 
 
 @app.post("/api/review/import-remote")

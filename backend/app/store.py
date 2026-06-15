@@ -163,18 +163,33 @@ def list_tasks() -> list[dict[str, Any]]:
     ]
 
 
-def list_review_tasks(limit: int | None = None) -> list[dict[str, Any]]:
+def list_review_tasks(
+    limit: int | None = None,
+    *,
+    status: str | None = None,
+    include_reviewed: bool = False,
+) -> list[dict[str, Any]]:
     ensure_state()
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
+        filters: list[str] = []
+        params: list[Any] = []
+        if status and status != "all":
+            filters.append("status = ?")
+            params.append(status)
+        if not include_reviewed:
+            filters.append("reviewed = 0")
+            filters.append("status != 'reviewed'")
+        where = f"WHERE {' AND '.join(filters)}" if filters else ""
         if limit is None:
             rows = conn.execute(
-                "SELECT * FROM review_tasks ORDER BY datetime(updated_at) DESC"
+                f"SELECT * FROM review_tasks {where} ORDER BY datetime(updated_at) DESC",
+                params,
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM review_tasks ORDER BY datetime(updated_at) DESC LIMIT ?",
-                (limit,),
+                f"SELECT * FROM review_tasks {where} ORDER BY datetime(updated_at) DESC LIMIT ?",
+                (*params, limit),
             ).fetchall()
     return [
         {
