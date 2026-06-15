@@ -4,7 +4,7 @@ import httpx
 
 from backend.app import main
 from backend.app.models import Stage2Annotation, SubjectAnnotation, SyncRequest
-from backend.app.uit_client import raise_for_status_with_body
+from backend.app.uit_client import UitClient, raise_for_status_with_body
 
 
 def status_error(status_code: int) -> httpx.HTTPStatusError:
@@ -72,3 +72,55 @@ def test_save_annotation_retries_400_with_latest_task(monkeypatch) -> None:
 
     assert result["status"] == "saved"
     assert calls == [initial_task, latest_task]
+
+
+def test_uit_client_retries_connect_error(monkeypatch) -> None:
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    class FakeAsyncClient:
+        async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
+            calls.append(url)
+            request = httpx.Request(method, url)
+            if len(calls) == 1:
+                raise httpx.ConnectError("network down", request=request)
+            return httpx.Response(200, request=request, json={"ok": True})
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = UitClient()
+    client.client = FakeAsyncClient()
+    monkeypatch.setattr("backend.app.uit_client.asyncio.sleep", fake_sleep)
+
+    response = asyncio.run(client.request_with_retry("GET", "/label_cpr/api/me"))
+
+    assert response.status_code == 200
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+def test_uit_client_retries_rate_limit_with_retry_after(monkeypatch) -> None:
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    class FakeAsyncClient:
+        async def request(self, method: str, url: str, **kwargs) -> httpx.Response:
+            calls.append(url)
+            request = httpx.Request(method, url)
+            if len(calls) == 1:
+                return httpx.Response(429, request=request, headers={"retry-after": "3"})
+            return httpx.Response(200, request=request, json={"ok": True})
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    client = UitClient()
+    client.client = FakeAsyncClient()
+    monkeypatch.setattr("backend.app.uit_client.asyncio.sleep", fake_sleep)
+
+    response = asyncio.run(client.request_with_retry("GET", "/label_cpr/api/me"))
+
+    assert response.status_code == 200
+    assert len(calls) == 2
+    assert sleeps == [3.0]

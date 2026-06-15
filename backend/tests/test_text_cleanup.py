@@ -14,7 +14,7 @@ def test_cleanup_desc_change_text_removes_subject_references() -> None:
     assert cleanup_desc_change_text("the two people in Subject 1 are standing") == "the two people are standing"
 
 
-def test_build_caption_avoids_comma_before_and() -> None:
+def test_build_caption_keeps_canonical_subject_comma_only() -> None:
     caption = build_caption(
         Stage2Annotation(
             caseType="MULTI",
@@ -35,4 +35,6 @@ def test_build_caption_avoids_comma_before_and() -> None:
         )
     )
 
-    assert ", and" not in caption.lower()
+    assert "hat, and Subject 2 refers" in caption
+    assert "sitting, and smiling" not in caption
+    assert "sitting and smiling" in caption

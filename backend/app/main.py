@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .ai_service import cleanup_stage2_annotation, fix_annotation_text, generate_annotation
 from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
+from .errors import error_detail
 from .image_cache import cache_task_images, cached_image_path
 from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, ReviewImportRequest, RuntimeSettings, SyncRequest
 from .settings import get_settings
@@ -225,7 +226,7 @@ async def uit_login() -> dict[str, object]:
         me = await uit_client.me()
         return {"login": result, "me": me}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/uit/me")
@@ -233,7 +234,7 @@ async def uit_me() -> dict[str, object]:
     try:
         return {"me": await uit_client.me()}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/uit/sessions")
@@ -241,7 +242,7 @@ async def uit_sessions() -> dict[str, object]:
     try:
         return await uit_client.sessions()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 def session_has_open_tasks(session: dict[str, object]) -> bool:
@@ -275,7 +276,7 @@ async def uit_auto_current_task() -> dict[str, object]:
                 return {"session": session, "sessionId": session_id, "task": task}
         return {"session": None, "sessionId": None, "task": None}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/uit/sessions/{session_id}/current-task")
@@ -287,7 +288,7 @@ async def uit_current_task(session_id: str) -> dict[str, object]:
             upsert_task(str(task["id"]), session_id, task, status="fetched")
         return data
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/uit/sessions/{session_id}/submissions")
@@ -295,7 +296,7 @@ async def uit_submissions(session_id: str, sent: bool = False) -> dict[str, obje
     try:
         return await uit_client.submissions(session_id, sent=sent)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/uit/sessions/{session_id}/tasks/{task_id}")
@@ -307,7 +308,7 @@ async def uit_task(session_id: str, task_id: str) -> dict[str, object]:
             upsert_task(str(task["id"]), session_id, task, status="fetched")
         return data
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.post("/api/automation/start")
@@ -315,7 +316,7 @@ async def automation_start(request: AutomationStartRequest) -> dict[str, object]
     try:
         return automation_runner.start(request.mode, request.limit)
     except Exception as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
 
 
 @app.post("/api/automation/stop")
@@ -340,7 +341,7 @@ async def review_import_remote(request: ReviewImportRequest) -> dict[str, object
     try:
         return await import_remote_review_tasks(remote_url or "")
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/review/submissions/{session_id}")
@@ -348,7 +349,7 @@ async def review_submissions(session_id: str) -> dict[str, object]:
     try:
         return await uit_client.submissions(session_id, sent=True)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.post("/api/review/approve")
@@ -401,7 +402,7 @@ async def ai_generate(request: GenerateRequest) -> dict[str, object]:
             "issues": issues,
         }
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.post("/api/ai/fix-text")
@@ -409,7 +410,7 @@ async def ai_fix_text(request: FixTextRequest) -> dict[str, object]:
     try:
         return {"text": await fix_annotation_text(request.text, request.field, runtime_settings())}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
 
 
 @app.post("/api/uit/save")
@@ -476,7 +477,7 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
             "warnings": warnings,
         }
     except Exception as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
 
 
 @app.post("/api/uit/submit")
@@ -516,7 +517,7 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
             )
         return {"status": "submitted", "result": result}
     except Exception as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
 
 
 @app.get("/api/local/tasks")

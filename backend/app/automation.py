@@ -5,6 +5,7 @@ from typing import Any
 
 from .ai_service import generate_annotation
 from .caption import build_caption, validate_annotation
+from .errors import error_detail
 from .models import AutomationMode, RuntimeSettings
 from .store import upsert_review_task, upsert_task
 from .uit_client import uit_client
@@ -72,6 +73,8 @@ class AutomationRunner:
                     submitted = await self._process_task(session_id, task, settings)
                     if self._should_stop(task_limit):
                         break
+                    if not submitted:
+                        break
                     if submitted:
                         await self._sleep_between_submissions()
                 if mode in {"one_session", "current_task"}:
@@ -81,7 +84,7 @@ class AutomationRunner:
             self.state.message = "Automation stopped"
         except Exception as exc:
             self.state.failed += 1
-            self.state.message = str(exc)
+            self.state.message = error_detail(exc)
         finally:
             self.state.running = False
             self.state.next_delay_seconds = None
@@ -154,8 +157,10 @@ class AutomationRunner:
             )
             return True
         except Exception as exc:
+            detail = error_detail(exc)
             self.state.failed += 1
-            upsert_review_task(task_id, session_id, task, "failed", issues=[], error=str(exc))
+            self.state.message = f"Failed {task_id}: {detail}"
+            upsert_review_task(task_id, session_id, task, "failed", issues=[], error=detail)
             return False
         finally:
             self.state.processed += 1

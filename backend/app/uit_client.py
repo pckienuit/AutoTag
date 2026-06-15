@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import io
 import mimetypes
 import time
@@ -13,6 +14,29 @@ from .settings import get_settings
 
 class UitRateLimitError(RuntimeError):
     pass
+
+
+RATE_LIMIT_STATUS = 429
+TRANSIENT_UIT_STATUSES = {RATE_LIMIT_STATUS, 502, 503, 504}
+UIT_RETRY_ATTEMPTS = 4
+UIT_RETRY_BASE_DELAY_SECONDS = 2.0
+UIT_MAX_RETRY_DELAY_SECONDS = 60.0
+
+
+def retry_delay_seconds(response: httpx.Response | None, attempt: int) -> float:
+    if response is not None:
+        retry_after = response.headers.get("retry-after")
+        if retry_after:
+            try:
+                return min(UIT_MAX_RETRY_DELAY_SECONDS, max(0.0, float(retry_after)))
+            except ValueError:
+                pass
+    return min(UIT_MAX_RETRY_DELAY_SECONDS, UIT_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+
+
+def rate_limit_message(response: httpx.Response) -> str:
+    delay = retry_delay_seconds(response, 1)
+    return f"UIT rate limit reached after retries. Please wait about {int(delay)} seconds before retrying."
 
 
 def raise_for_status_with_body(response: httpx.Response) -> None:
@@ -44,17 +68,17 @@ class UitClient:
         }
         if not payload["email"] or not payload["password"]:
             raise ValueError("UIT email/password are required.")
-        response = await self.client.post(f"{self.api_prefix}/auth/login", json=payload)
+        response = await self.request_with_retry("POST", f"{self.api_prefix}/auth/login", json=payload)
         raise_for_status_with_body(response)
         self._authenticated_until = time.monotonic() + 900
         return response.json()
 
     async def me(self) -> dict[str, Any] | None:
-        response = await self.client.get(f"{self.api_prefix}/me")
+        response = await self.request_with_retry("GET", f"{self.api_prefix}/me")
         if response.status_code == 401:
             return None
         if response.status_code == 429:
-            raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
+            raise UitRateLimitError(rate_limit_message(response))
         raise_for_status_with_body(response)
         return response.json()
 
@@ -68,25 +92,25 @@ class UitClient:
 
     async def get_json(self, path: str) -> dict[str, Any]:
         await self.ensure_login()
-        response = await self.client.get(path)
+        response = await self.request_with_retry("GET", path)
         if response.status_code == 401:
             self._authenticated_until = 0.0
             await self.login()
-            response = await self.client.get(path)
+            response = await self.request_with_retry("GET", path)
         if response.status_code == 429:
-            raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
+            raise UitRateLimitError(rate_limit_message(response))
         raise_for_status_with_body(response)
         return response.json()
 
     async def post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         await self.ensure_login()
-        response = await self.client.post(path, json=payload)
+        response = await self.request_with_retry("POST", path, json=payload)
         if response.status_code == 401:
             self._authenticated_until = 0.0
             await self.login()
-            response = await self.client.post(path, json=payload)
+            response = await self.request_with_retry("POST", path, json=payload)
         if response.status_code == 429:
-            raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
+            raise UitRateLimitError(rate_limit_message(response))
         raise_for_status_with_body(response)
         return response.json()
 
@@ -148,13 +172,13 @@ class UitClient:
     ) -> str:
         await self.ensure_login()
         absolute_url = urljoin(self.base_url, image_url)
-        response = await self.client.get(absolute_url)
+        response = await self.request_with_retry("GET", absolute_url)
         if response.status_code == 401:
             self._authenticated_until = 0.0
             await self.login()
-            response = await self.client.get(absolute_url)
+            response = await self.request_with_retry("GET", absolute_url)
         if response.status_code == 429:
-            raise UitRateLimitError("UIT rate limit reached. Please wait before retrying.")
+            raise UitRateLimitError(rate_limit_message(response))
         raise_for_status_with_body(response)
         content_type = response.headers.get("content-type")
         image_bytes = response.content
@@ -165,6 +189,30 @@ class UitClient:
             content_type = mimetypes.guess_type(absolute_url)[0] or "image/jpeg"
         encoded = base64.b64encode(image_bytes).decode("ascii")
         return f"data:{content_type};base64,{encoded}"
+
+    async def request_with_retry(
+        self,
+        method: str,
+        url: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        last_transport_error: httpx.TransportError | None = None
+        for attempt in range(1, UIT_RETRY_ATTEMPTS + 1):
+            try:
+                response = await self.client.request(method, url, **kwargs)
+            except httpx.TransportError as exc:
+                last_transport_error = exc
+                if attempt >= UIT_RETRY_ATTEMPTS:
+                    raise
+                await asyncio.sleep(retry_delay_seconds(None, attempt))
+                continue
+            if response.status_code in TRANSIENT_UIT_STATUSES and attempt < UIT_RETRY_ATTEMPTS:
+                await asyncio.sleep(retry_delay_seconds(response, attempt))
+                continue
+            return response
+        if last_transport_error is not None:
+            raise last_transport_error
+        raise RuntimeError("UIT request retry loop exited unexpectedly.")
 
     def absolute_url(self, image_url: str | None) -> str | None:
         return urljoin(self.base_url, image_url) if image_url else None

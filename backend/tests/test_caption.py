@@ -40,7 +40,7 @@ def test_multi_caption() -> None:
         ],
     )
     assert build_caption(annotation) == (
-        "In the query image, Subject 1 refers to the man standing at the far left "
+        "In the query image, Subject 1 refers to the man standing at the far left, "
         "and Subject 2 refers to the person kneeling on the grass. "
         "Retrieve target images where Subject 1 is rowing a boat and Subject 2 is holding up a fish."
     )
@@ -67,7 +67,7 @@ def test_relational_caption() -> None:
         ],
     )
     caption = build_caption(annotation)
-    assert "Subject 1 refers to the fourth seated person from the right and Subject 2 refers to" in caption
+    assert "Subject 1 refers to the fourth seated person from the right, and Subject 2 refers to" in caption
     assert "Subject 1 is taking a photo of Subject 2" in caption
     assert "with Subject 2 is sitting on a blue lounge chair" in caption
     assert validate_annotation(annotation) == []
@@ -121,7 +121,7 @@ def test_relational_caption_no_extras() -> None:
     )
     caption = build_caption(annotation)
     assert caption == (
-        "In the query image, Subject 1 refers to the fourth seated person from the right "
+        "In the query image, Subject 1 refers to the fourth seated person from the right, "
         "and Subject 2 refers to the third seated person from the right. "
         "Retrieve target images where Subject 1 is taking a photo of Subject 2."
     )

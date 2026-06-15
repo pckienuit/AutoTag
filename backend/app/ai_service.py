@@ -71,8 +71,8 @@ Follow these field rules:
 
 The final caption built from your fields should follow these patterns:
 - SINGLE: In the query image, Subject 1 refers to [DESC]. Retrieve target images where Subject 1 [CHANGE].
-- MULTI: In the query image, Subject 1 refers to [DESC 1] and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [CHANGE 1] and Subject 2 [CHANGE 2].
-- RELATIONAL: In the query image, Subject 1 refers to [DESC 1] and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [PAIR_CHANGE] Subject 2.
+- MULTI: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [CHANGE 1] and Subject 2 [CHANGE 2].
+- RELATIONAL: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [PAIR_CHANGE] Subject 2.
 
 Before responding, verify that the JSON is valid, the case is consistent with the target image, and the text is short, natural, and grounded in visible evidence.
 """
@@ -454,11 +454,17 @@ def retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
 async def post_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> httpx.Response:
     async with httpx.AsyncClient(timeout=timeout) as client:
         for attempt in range(1, MODEL_RETRY_ATTEMPTS + 1):
-            response = await client.post(
-                url,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
+            try:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+            except httpx.TransportError:
+                if attempt >= MODEL_RETRY_ATTEMPTS:
+                    raise
+                await asyncio.sleep(MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
+                continue
             if (
                 response.status_code in TRANSIENT_MODEL_STATUSES
                 and attempt < MODEL_RETRY_ATTEMPTS

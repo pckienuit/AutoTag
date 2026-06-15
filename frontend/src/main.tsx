@@ -101,7 +101,7 @@ function buildCaption(annotation: Stage2Annotation): string {
 
   if (annotation.caseType === "MULTI") {
     if (!desc1 || !desc2 || !change1 || !change2) return "";
-    return `In the query image, Subject 1 refers to ${desc1} and Subject 2 refers to ${desc2}. Retrieve target images where Subject 1 ${change1} and Subject 2 ${change2}.`;
+    return `In the query image, Subject 1 refers to ${desc1}, and Subject 2 refers to ${desc2}. Retrieve target images where Subject 1 ${change1} and Subject 2 ${change2}.`;
   }
 
   const pair = normalizePair(annotation.pairChangeFinal || annotation.pairChangeRaw);
@@ -122,7 +122,7 @@ function buildCaption(annotation: Stage2Annotation): string {
     suffix = `, with ${extras[0]} and ${extras[1]}`;
   }
 
-  return `In the query image, Subject 1 refers to ${desc1} and Subject 2 refers to ${desc2}. Retrieve target images where ${pair}${suffix}.`;
+  return `In the query image, Subject 1 refers to ${desc1}, and Subject 2 refers to ${desc2}. Retrieve target images where ${pair}${suffix}.`;
 }
 
 function mergeReviewTasks(current: ReviewTask[], incoming: ReviewTask[]): ReviewTask[] {
