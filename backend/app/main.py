@@ -487,17 +487,30 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
     issues = validate_annotation(annotation)
     if issues:
         return {"status": "blocked", "issues": issues}
+    task = request.task
     try:
-        result = await uit_client.submit(
-            request.task,
-            annotation.model_dump(),
-            request.timeSpent,
-            request.sessionId,
-        )
+        try:
+            result = await uit_client.submit(
+                task,
+                annotation.model_dump(),
+                request.timeSpent,
+                request.sessionId,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 409 or not request.sessionId:
+                raise
+            latest = await uit_client.task(str(request.task["id"]), request.sessionId)
+            task = {**task, **(latest.get("task") or {})}
+            result = await uit_client.submit(
+                task,
+                annotation.model_dump(),
+                request.timeSpent,
+                request.sessionId,
+            )
         upsert_task(
             str(request.task["id"]),
             request.sessionId,
-            result.get("task") or request.task,
+            result.get("task") or task,
             annotation.model_dump(),
             status="submitted",
             needs_review=True,
@@ -507,7 +520,7 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
             upsert_review_task(
                 str(request.task["id"]),
                 request.sessionId,
-                result.get("task") or request.task,
+                result.get("task") or task,
                 "not_reviewed",
                 annotation.model_dump(),
                 annotation.captionFinal or "",

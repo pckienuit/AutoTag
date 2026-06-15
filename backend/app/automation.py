@@ -79,7 +79,15 @@ class AutomationRunner:
                         await self._sleep_between_submissions()
                 if mode in {"one_session", "current_task"}:
                     break
-            self.state.message = "Automation stopped" if self.state.stop_requested else "Automation completed"
+            if self.state.stop_requested:
+                self.state.message = "Automation stopped"
+            elif self.state.failed:
+                if not self.state.message.startswith("Failed "):
+                    self.state.message = "Automation stopped after failure"
+            elif self.state.needs_review:
+                self.state.message = "Automation paused for review"
+            else:
+                self.state.message = "Automation completed"
         except asyncio.CancelledError:
             self.state.message = "Automation stopped"
         except Exception as exc:

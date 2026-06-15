@@ -25,3 +25,29 @@ def test_error_detail_names_empty_httpx_timeout() -> None:
         "ReadTimeout: request timed out while calling "
         "POST https://example.test/v1/chat/completions"
     )
+
+
+def test_run_preserves_task_failure_message(monkeypatch) -> None:
+    runner = AutomationRunner(lambda: object())
+
+    async def fake_session_candidates(mode: str) -> list[dict]:
+        return [{"id": "session-1"}]
+
+    class FakeUitClient:
+        async def current_task(self, session_id: str) -> dict:
+            return {"task": {"id": "task-1"}}
+
+    async def fake_process_task(session_id: str, task: dict, settings: object) -> bool:
+        runner.state.failed += 1
+        runner.state.processed += 1
+        runner.state.message = "Failed task-1: model returned no text"
+        return False
+
+    monkeypatch.setattr(runner, "_session_candidates", fake_session_candidates)
+    monkeypatch.setattr(automation, "uit_client", FakeUitClient())
+    monkeypatch.setattr(runner, "_process_task", fake_process_task)
+
+    asyncio.run(runner._run("all_open", None))
+
+    assert runner.state.running is False
+    assert runner.state.message == "Failed task-1: model returned no text"

@@ -12,6 +12,8 @@ def test_cleanup_desc_change_text_removes_subject_references() -> None:
     assert cleanup_desc_change_text("Subject 1 refers to the man in a red shirt") == "the man in a red shirt"
     assert cleanup_desc_change_text("Subject 2 is sitting, and smiling") == "is sitting and smiling"
     assert cleanup_desc_change_text("the two people in Subject 1 are standing") == "the two people are standing"
+    assert cleanup_desc_change_text("She is wearing a black shirt") == "is wearing a black shirt"
+    assert cleanup_desc_change_text("They are holding hands") == "are holding hands"
 
 
 def test_build_caption_keeps_canonical_subject_comma_only() -> None:

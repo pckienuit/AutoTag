@@ -1,5 +1,6 @@
-import base64
 import asyncio
+import base64
+import io
 import json
 import mimetypes
 from json import JSONDecodeError
@@ -7,6 +8,7 @@ from typing import Any
 from urllib.parse import unquote
 
 import httpx
+from PIL import Image, ImageDraw, ImageFilter
 
 from .caption import build_caption
 from .image_cache import cached_image_path
@@ -17,6 +19,7 @@ from .uit_client import uit_client
 
 TRANSIENT_MODEL_STATUSES = {429, 502, 503, 504}
 MODEL_RETRY_ATTEMPTS = 4
+MODEL_EMPTY_OUTPUT_RETRY_ATTEMPTS = 3
 MODEL_RETRY_BASE_DELAY_SECONDS = 2.0
 
 
@@ -111,6 +114,37 @@ Patch only fields that are clearly wrong or incomplete. Keep good fields unchang
 Never mention the literal label "Subject", "Subject 1", or "Subject 2" inside DESC or CHANGE field values.
 Do not add unsupported details. Prefer leaving a field unchanged over guessing.
 """
+
+
+DEIDENTIFIED_FALLBACK_PROMPT = """
+Create a CPR annotation JSON for the two de-identified images.
+The colored boxes and labels mark the task subjects. Faces may be blurred, so use visible clothing, pose, accessories, and background instead of identity.
+
+Return only a valid JSON object that matches this schema:
+{
+  "caseType": "SINGLE | MULTI | RELATIONAL",
+  "relationalSubject1ChangeEnabled": false,
+  "relationalSubject2ChangeEnabled": false,
+  "pairChangeRaw": "string|null",
+  "pairChangeFinal": "string|null",
+  "subjects": [
+    {
+      "subjectId": 1,
+      "queryGroupIds": ["query group id"],
+      "targetGroupIds": ["target group id"],
+      "descQueryRaw": "English fragment",
+      "descQueryFinal": "English fragment",
+      "changeTargetRaw": "English verb phrase",
+      "changeTargetFinal": "English verb phrase"
+    }
+  ]
+}
+
+Use SINGLE for one boxed subject, MULTI for two separate subjects, and RELATIONAL when the target relation between two subjects is the main signal.
+DESC fields describe the subject in the query image.
+CHANGE fields must read naturally after "Subject 1" or "Subject 2", such as "is wearing a black shirt"; do not start with "he", "she", "they", or a person name.
+Keep text concise, simple, and grounded only in visible evidence.
+""".strip()
 
 
 def image_by_side(task: dict[str, Any], side: str) -> dict[str, Any] | None:
@@ -239,13 +273,124 @@ async def generate_annotation(
         json_object=True,
     )
     url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
-    raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
+    try:
+        raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
+    except ValueError as exc:
+        if not is_no_text_output_error(exc):
+            raise
+        fallback_payload = await deidentified_generation_payload(
+            settings.openai_compat_model,
+            task,
+            query,
+            target,
+            notes,
+        )
+        raw = await request_completion(url, settings.openai_compat_api_key, fallback_payload, 120.0)
     data = extract_json(raw)
     annotation = cleanup_stage2_annotation(coerce_annotation(data))
     annotation.captionFinal = build_caption(annotation)
     if settings.ai_double_check_enabled:
-        annotation = await review_annotation(task, annotation, settings, notes)
+        try:
+            annotation = await review_annotation(task, annotation, settings, notes)
+        except ValueError as exc:
+            if not is_no_text_output_error(exc):
+                raise
+            annotation.llmEdits.append(
+                {
+                    "type": "double_check",
+                    "approved": False,
+                    "issues": ["Double-check skipped because the model returned no text output."],
+                }
+            )
     return annotation
+
+
+async def deidentified_generation_payload(
+    model: str,
+    task: dict[str, Any],
+    query: dict[str, Any] | None,
+    target: dict[str, Any] | None,
+    notes: str = "",
+) -> dict[str, Any]:
+    content: list[dict[str, Any]] = [
+        {
+            "type": "text",
+            "text": json.dumps(
+                {
+                    "instruction": DEIDENTIFIED_FALLBACK_PROMPT,
+                    "queryBoxes": box_summary(query),
+                    "targetBoxes": box_summary(target),
+                    "userNotes": notes,
+                },
+                ensure_ascii=True,
+            ),
+        }
+    ]
+    await append_deidentified_task_images(content, query, target)
+    return chat_payload(
+        model,
+        temperature=0.1,
+        messages=[{"role": "user", "content": content}],
+        json_object=True,
+    )
+
+
+async def append_deidentified_task_images(
+    content: list[dict[str, Any]],
+    query: dict[str, Any] | None,
+    target: dict[str, Any] | None,
+) -> None:
+    for label, image in (("Query image", query), ("Target image", target)):
+        if image and image.get("imageUrl"):
+            image_url = str(image["imageUrl"])
+            content.append({"type": "text", "text": f"{label} with de-identified boxed subjects"})
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": await deidentified_task_image_as_data_url(
+                            image_url,
+                            box_summary(image),
+                        ),
+                    },
+                }
+            )
+
+
+async def deidentified_task_image_as_data_url(
+    image_url: str,
+    boxes: list[dict[str, Any]],
+) -> str:
+    data_url = await task_image_as_data_url(image_url)
+    if "," not in data_url:
+        return data_url
+    try:
+        image_bytes = base64.b64decode(data_url.split(",", 1)[1])
+    except ValueError:
+        return data_url
+
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        image = image.convert("RGB")
+        draw = ImageDraw.Draw(image)
+        for index, box in enumerate(boxes):
+            coords = uit_client._box_coords(box, image.width, image.height)
+            if not coords:
+                continue
+            left, top, right, bottom = coords
+            height = bottom - top
+            if height <= 0:
+                continue
+            blur_bottom = bottom if height <= image.height * 0.45 else top + max(1, round(height * 0.35))
+            region = image.crop((left, top, right, blur_bottom)).filter(ImageFilter.GaussianBlur(radius=12))
+            image.paste(region, (left, top))
+            color = "#14b8a6" if index % 2 == 0 else "#f59e0b"
+            for offset in range(3):
+                draw.rectangle((left - offset, top - offset, right + offset, bottom + offset), outline=color)
+            label = str(box.get("groupUid") or box.get("label") or box.get("id") or index + 1)
+            draw.text((left + 4, max(0, top + 4)), label, fill="#000000")
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=60, optimize=True)
+    return f"data:image/jpeg;base64,{base64.b64encode(output.getvalue()).decode('ascii')}"
 
 
 async def review_annotation(
@@ -434,11 +579,36 @@ async def request_completion(url: str, api_key: str, payload: dict[str, Any], ti
         if content.strip():
             return content
     except ValueError as exc:
-        if "no text output" not in str(exc):
+        if not is_no_text_output_error(exc):
             raise
+        last_error = exc
+    else:
+        last_error = empty_completion_error(response)
+
     retry_payload = retry_chat_payload(payload)
-    retry_response = await post_completion(url, api_key, retry_payload, timeout)
-    return completion_content(retry_response)
+    for attempt in range(1, MODEL_EMPTY_OUTPUT_RETRY_ATTEMPTS + 1):
+        if attempt > 1:
+            await asyncio.sleep(MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 2)))
+        retry_response = await post_completion(url, api_key, retry_payload, timeout)
+        try:
+            content = completion_content(retry_response)
+            if content.strip():
+                return content
+        except ValueError as exc:
+            if not is_no_text_output_error(exc):
+                raise
+            last_error = exc
+        else:
+            last_error = empty_completion_error(retry_response)
+    raise last_error
+
+
+def is_no_text_output_error(exc: ValueError) -> bool:
+    return "no text output" in str(exc)
+
+
+def empty_completion_error(response: httpx.Response) -> ValueError:
+    return ValueError(f"Model API returned no text output. Body: {response.text[:500]}")
 
 
 def retry_delay_seconds(response: httpx.Response, attempt: int) -> float:

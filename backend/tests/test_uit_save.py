@@ -74,6 +74,40 @@ def test_save_annotation_retries_400_with_latest_task(monkeypatch) -> None:
     assert calls == [initial_task, latest_task]
 
 
+def test_submit_annotation_retries_409_with_latest_task(monkeypatch) -> None:
+    initial_task = {"id": "task-1", "draftVersion": 0, "reservationVersion": 0, "claimToken": "old"}
+    latest_task = {"id": "task-1", "draftVersion": 4, "reservationVersion": 5, "claimToken": "new"}
+    calls: list[dict[str, object]] = []
+
+    class FakeUitClient:
+        async def submit(self, task, annotation, time_spent, session_id):
+            calls.append(task)
+            if len(calls) == 1:
+                raise status_error(409)
+            return {"task": task, "ok": True}
+
+        async def task(self, task_id, session_id):
+            return {"task": latest_task}
+
+    monkeypatch.setattr(main, "uit_client", FakeUitClient())
+    monkeypatch.setattr(main, "upsert_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "upsert_review_task", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        main.submit_annotation(
+            SyncRequest(
+                task=initial_task,
+                annotation=valid_annotation(),
+                sessionId="session-1",
+                reviewed=False,
+            )
+        )
+    )
+
+    assert result["status"] == "submitted"
+    assert calls == [initial_task, latest_task]
+
+
 def test_uit_client_retries_connect_error(monkeypatch) -> None:
     calls: list[str] = []
     sleeps: list[float] = []

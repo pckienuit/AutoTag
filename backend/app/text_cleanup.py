@@ -39,6 +39,14 @@ SUBJECT_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 GENERIC_SUBJECT_RE = re.compile(r"\bsubjects\b|\bsubject\b", re.IGNORECASE)
+LEADING_PRONOUN_VERB_RE = re.compile(
+    r"^\s*(?:he|she|it|this person|the person)\s+(?=(?:is|was|has|wears|holds|stands|sits|walks)\b)",
+    re.IGNORECASE,
+)
+LEADING_PLURAL_PRONOUN_VERB_RE = re.compile(
+    r"^\s*(?:they|these people|the people)\s+(?=(?:are|were|have|wear|hold|stand|sit|walk)\b)",
+    re.IGNORECASE,
+)
 
 
 def remove_comma_before_connectors(text: str | None) -> str:
@@ -50,6 +58,8 @@ def remove_subject_references(text: str | None) -> str:
     value = SUBJECT_REF_PREFIX_RE.sub("", value)
     value = SUBJECT_VERB_PREFIX_RE.sub("", value)
     value = TARGET_SUBJECT_PREFIX_RE.sub("", value)
+    value = LEADING_PRONOUN_VERB_RE.sub("", value)
+    value = LEADING_PLURAL_PRONOUN_VERB_RE.sub("", value)
     value = SUBJECT_POSSESSIVE_RE.sub("", value)
     value = SUBJECT_PREPOSITION_RE.sub("", value)
     value = SUBJECT_LABEL_RE.sub("", value)

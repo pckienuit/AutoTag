@@ -12,6 +12,7 @@ from backend.app.ai_service import (
     coerce_annotation,
     completion_content,
     post_completion,
+    request_completion,
     review_annotation,
 )
 from backend.app.models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
@@ -293,6 +294,57 @@ def test_post_completion_retries_transport_error(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+def test_request_completion_retries_empty_model_output(monkeypatch) -> None:
+    calls: list[dict] = []
+    sleeps: list[float] = []
+    empty_response = {
+        "response": {
+            "usageMetadata": {
+                "promptTokenCount": 1450,
+                "totalTokenCount": 1450,
+            }
+        }
+    }
+
+    async def fake_post_completion(
+        url: str,
+        api_key: str,
+        payload: dict,
+        timeout: float,
+    ) -> httpx.Response:
+        calls.append(payload)
+        if len(calls) < 3:
+            return response_json(empty_response)
+        return response_json({"choices": [{"message": {"content": "ok"}}]})
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("backend.app.ai_service.post_completion", fake_post_completion)
+    monkeypatch.setattr("backend.app.ai_service.asyncio.sleep", fake_sleep)
+
+    content = asyncio.run(
+        request_completion(
+            "https://example.test/v1/chat/completions",
+            "test-key",
+            {
+                "model": "gemini-3-flash",
+                "messages": [
+                    {"role": "system", "content": "system rules"},
+                    {"role": "user", "content": "task"},
+                ],
+                "max_tokens": 4096,
+            },
+            30.0,
+        )
+    )
+
+    assert content == "ok"
+    assert len(calls) == 3
+    assert calls[1]["messages"][0]["role"] == "user"
     assert sleeps == [2.0]
 
 
