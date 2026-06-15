@@ -193,6 +193,7 @@ function App() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const dirtyReviewDraftIds = useRef(new Set<string>());
   const hydratingReviewTaskIds = useRef(new Set<string>());
+  const hydratedReviewTaskIds = useRef(new Set<string>());
 
   const caption = useMemo(() => buildCaption(annotation), [annotation]);
   const automationDelaySeconds = delaySeconds(automationStatus, nowMs);
@@ -356,7 +357,11 @@ function App() {
 
   async function hydrateReviewTaskImages(items: ReviewTask[]) {
     const missingImageItems = items
-      .filter((item) => !item.task.images?.length && !hydratingReviewTaskIds.current.has(item.taskId))
+      .filter((item) =>
+        !item.task.images?.length &&
+        !hydratingReviewTaskIds.current.has(item.taskId) &&
+        !hydratedReviewTaskIds.current.has(item.taskId)
+      )
       .slice(0, REVIEW_HYDRATE_MAX_ITEMS);
     if (!missingImageItems.length) return;
     for (const item of missingImageItems) {
@@ -381,6 +386,7 @@ function App() {
 
     for (const item of missingImageItems) {
       hydratingReviewTaskIds.current.delete(item.taskId);
+      hydratedReviewTaskIds.current.add(item.taskId);
     }
     setReviewTasks((current) =>
       current.map((item) => {

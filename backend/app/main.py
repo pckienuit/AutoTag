@@ -10,7 +10,7 @@ from .automation import AutomationRunner
 from .caption import build_caption, validate_annotation
 from .errors import error_detail
 from .image_cache import cache_task_images, cached_image_path
-from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, ReviewImportRequest, RuntimeSettings, SyncRequest
+from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, ReviewImportRequest, RuntimeSettings, Stage2Annotation, SyncRequest
 from .settings import get_settings
 from .store import list_review_tasks, list_tasks, upsert_review_task, upsert_task
 from .uit_client import uit_client
@@ -46,6 +46,30 @@ app.add_middleware(
 
 
 SAVE_REFRESH_RETRY_STATUSES = {400, 409}
+FORMAT_RETRY_STATUSES = {400, 422}
+FORMAT_ERROR_MARKERS = (
+    "caption_format",
+    "caption format",
+    "format",
+    "punctuation",
+    "comma",
+    "period",
+)
+
+
+def canonicalize_for_uit(annotation: Stage2Annotation) -> Stage2Annotation:
+    cleaned = cleanup_stage2_annotation(annotation)
+    caption = build_caption(cleaned)
+    cleaned.captionRaw = caption
+    cleaned.captionFinal = caption
+    return cleaned
+
+
+def is_uit_format_error(exc: httpx.HTTPStatusError) -> bool:
+    if exc.response.status_code not in FORMAT_RETRY_STATUSES:
+        return False
+    body = exc.response.text.lower()
+    return any(marker in body for marker in FORMAT_ERROR_MARKERS)
 
 
 def review_import_url(remote_url: str) -> str:
@@ -370,8 +394,7 @@ async def review_submissions(session_id: str) -> dict[str, object]:
 
 @app.post("/api/review/approve")
 async def approve_review_task(request: ReviewApproveRequest) -> dict[str, object]:
-    annotation = cleanup_stage2_annotation(request.annotation)
-    annotation.captionFinal = build_caption(annotation)
+    annotation = canonicalize_for_uit(request.annotation)
     task_id = str(request.task["id"])
     upsert_task(
         task_id,
@@ -431,8 +454,7 @@ async def ai_fix_text(request: FixTextRequest) -> dict[str, object]:
 
 @app.post("/api/uit/save")
 async def save_annotation(request: SyncRequest) -> dict[str, object]:
-    annotation = cleanup_stage2_annotation(request.annotation)
-    annotation.captionFinal = build_caption(annotation)
+    annotation = canonicalize_for_uit(request.annotation)
     issues = validate_annotation(annotation)
     reviewed = request.reviewed
     task = request.task
@@ -447,21 +469,41 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
                 request.sessionId,
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in SAVE_REFRESH_RETRY_STATUSES or not request.sessionId:
-                raise
-            latest = await uit_client.task(str(request.task["id"]), request.sessionId)
-            task = {**task, **(latest.get("task") or {})}
-            try:
+            if is_uit_format_error(exc):
+                annotation = canonicalize_for_uit(annotation)
+                warnings.append("UIT rejected annotation format once; retried with canonical caption.")
                 result = await uit_client.save(
                     task,
                     annotation.model_dump(),
                     request.timeSpent,
                     request.sessionId,
                 )
-            except httpx.HTTPStatusError as retry_exc:
-                if retry_exc.response.status_code != 409 or not reviewed:
-                    raise
-                warnings.append("UIT rejected save because the task is already submitted or locked; marked reviewed locally.")
+            elif exc.response.status_code in SAVE_REFRESH_RETRY_STATUSES and request.sessionId:
+                latest = await uit_client.task(str(request.task["id"]), request.sessionId)
+                task = {**task, **(latest.get("task") or {})}
+                try:
+                    result = await uit_client.save(
+                        task,
+                        annotation.model_dump(),
+                        request.timeSpent,
+                        request.sessionId,
+                    )
+                except httpx.HTTPStatusError as retry_exc:
+                    if is_uit_format_error(retry_exc):
+                        annotation = canonicalize_for_uit(annotation)
+                        warnings.append("UIT rejected annotation format once; retried with canonical caption.")
+                        result = await uit_client.save(
+                            task,
+                            annotation.model_dump(),
+                            request.timeSpent,
+                            request.sessionId,
+                        )
+                    elif retry_exc.response.status_code == 409 and reviewed:
+                        warnings.append("UIT rejected save because the task is already submitted or locked; marked reviewed locally.")
+                    else:
+                        raise
+            else:
+                raise
         task = {**task, **(result.get("task") or {})}
         upsert_task(
             str(request.task["id"]),
@@ -498,8 +540,7 @@ async def save_annotation(request: SyncRequest) -> dict[str, object]:
 
 @app.post("/api/uit/submit")
 async def submit_annotation(request: SyncRequest) -> dict[str, object]:
-    annotation = cleanup_stage2_annotation(request.annotation)
-    annotation.captionFinal = build_caption(annotation)
+    annotation = canonicalize_for_uit(request.annotation)
     issues = validate_annotation(annotation)
     if issues:
         return {"status": "blocked", "issues": issues}
@@ -513,16 +554,36 @@ async def submit_annotation(request: SyncRequest) -> dict[str, object]:
                 request.sessionId,
             )
         except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 409 or not request.sessionId:
+            if is_uit_format_error(exc):
+                annotation = canonicalize_for_uit(annotation)
+                result = await uit_client.submit(
+                    task,
+                    annotation.model_dump(),
+                    request.timeSpent,
+                    request.sessionId,
+                )
+            elif exc.response.status_code == 409 and request.sessionId:
+                latest = await uit_client.task(str(request.task["id"]), request.sessionId)
+                task = {**task, **(latest.get("task") or {})}
+                try:
+                    result = await uit_client.submit(
+                        task,
+                        annotation.model_dump(),
+                        request.timeSpent,
+                        request.sessionId,
+                    )
+                except httpx.HTTPStatusError as retry_exc:
+                    if not is_uit_format_error(retry_exc):
+                        raise
+                    annotation = canonicalize_for_uit(annotation)
+                    result = await uit_client.submit(
+                        task,
+                        annotation.model_dump(),
+                        request.timeSpent,
+                        request.sessionId,
+                    )
+            else:
                 raise
-            latest = await uit_client.task(str(request.task["id"]), request.sessionId)
-            task = {**task, **(latest.get("task") or {})}
-            result = await uit_client.submit(
-                task,
-                annotation.model_dump(),
-                request.timeSpent,
-                request.sessionId,
-            )
         upsert_task(
             str(request.task["id"]),
             request.sessionId,

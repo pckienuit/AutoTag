@@ -7,9 +7,9 @@ from backend.app.models import Stage2Annotation, SubjectAnnotation, SyncRequest
 from backend.app.uit_client import UitClient, raise_for_status_with_body
 
 
-def status_error(status_code: int) -> httpx.HTTPStatusError:
+def status_error(status_code: int, text: str = "stale draft version") -> httpx.HTTPStatusError:
     request = httpx.Request("POST", "https://aiclub.uit.edu.vn/save")
-    response = httpx.Response(status_code, request=request, text="stale draft version")
+    response = httpx.Response(status_code, request=request, text=text)
     return httpx.HTTPStatusError("failed", request=request, response=response)
 
 
@@ -23,6 +23,28 @@ def valid_annotation() -> Stage2Annotation:
                 descQueryFinal="the person in the black jacket",
                 changeTargetFinal="is standing near the train",
             )
+        ],
+    )
+
+
+def multi_annotation() -> Stage2Annotation:
+    return Stage2Annotation(
+        caseType="MULTI",
+        captionRaw="bad format",
+        captionFinal="bad format",
+        subjects=[
+            SubjectAnnotation(
+                subjectId=1,
+                queryGroupIds=["1"],
+                descQueryFinal="the man in a hat",
+                changeTargetFinal="is sitting",
+            ),
+            SubjectAnnotation(
+                subjectId=2,
+                queryGroupIds=["2"],
+                descQueryFinal="the woman in red",
+                changeTargetFinal="is standing",
+            ),
         ],
     )
 
@@ -106,6 +128,72 @@ def test_submit_annotation_retries_409_with_latest_task(monkeypatch) -> None:
 
     assert result["status"] == "submitted"
     assert calls == [initial_task, latest_task]
+
+
+def test_save_annotation_retries_format_error_with_canonical_caption(monkeypatch) -> None:
+    task = {"id": "task-1", "draftVersion": 0, "reservationVersion": 0, "claimToken": "old"}
+    calls: list[dict[str, object]] = []
+
+    class FakeUitClient:
+        async def save(self, task_arg, annotation, time_spent, session_id):
+            calls.append(annotation)
+            if len(calls) == 1:
+                raise status_error(400, '{"code":"caption_format","message":"Caption format is invalid"}')
+            return {"task": task_arg, "ok": True}
+
+    monkeypatch.setattr(main, "uit_client", FakeUitClient())
+    monkeypatch.setattr(main, "upsert_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "upsert_review_task", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        main.save_annotation(
+            SyncRequest(
+                task=task,
+                annotation=multi_annotation(),
+                sessionId="session-1",
+                reviewed=False,
+            )
+        )
+    )
+
+    assert result["status"] == "saved"
+    assert len(calls) == 2
+    assert calls[-1]["captionRaw"] == calls[-1]["captionFinal"]
+    assert "the man in a hat, and Subject 2 refers" in calls[-1]["captionFinal"]
+    assert calls[-1]["captionFinal"].endswith(".")
+
+
+def test_submit_annotation_retries_format_error_with_canonical_caption(monkeypatch) -> None:
+    task = {"id": "task-1", "draftVersion": 0, "reservationVersion": 0, "claimToken": "old"}
+    calls: list[dict[str, object]] = []
+
+    class FakeUitClient:
+        async def submit(self, task_arg, annotation, time_spent, session_id):
+            calls.append(annotation)
+            if len(calls) == 1:
+                raise status_error(422, '{"code":"caption_format","message":"Missing comma"}')
+            return {"task": task_arg, "ok": True}
+
+    monkeypatch.setattr(main, "uit_client", FakeUitClient())
+    monkeypatch.setattr(main, "upsert_task", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "upsert_review_task", lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        main.submit_annotation(
+            SyncRequest(
+                task=task,
+                annotation=multi_annotation(),
+                sessionId="session-1",
+                reviewed=False,
+            )
+        )
+    )
+
+    assert result["status"] == "submitted"
+    assert len(calls) == 2
+    assert calls[-1]["captionRaw"] == calls[-1]["captionFinal"]
+    assert "the man in a hat, and Subject 2 refers" in calls[-1]["captionFinal"]
+    assert calls[-1]["captionFinal"].endswith(".")
 
 
 def test_uit_client_retries_connect_error(monkeypatch) -> None:

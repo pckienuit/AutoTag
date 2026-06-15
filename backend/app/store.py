@@ -175,27 +175,40 @@ def list_review_tasks(
         filters: list[str] = []
         params: list[Any] = []
         if status and status != "all":
-            filters.append("status = ?")
+            filters.append("review_tasks.status = ?")
             params.append(status)
         if not include_reviewed:
-            filters.append("reviewed = 0")
-            filters.append("status != 'reviewed'")
+            filters.append("review_tasks.reviewed = 0")
+            filters.append("review_tasks.status != 'reviewed'")
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         if limit is None:
             rows = conn.execute(
-                f"SELECT * FROM review_tasks {where} ORDER BY datetime(updated_at) DESC",
+                f"""
+                SELECT review_tasks.*, tasks.payload AS cached_payload
+                FROM review_tasks
+                LEFT JOIN tasks ON tasks.task_id = review_tasks.task_id
+                {where}
+                ORDER BY datetime(review_tasks.updated_at) DESC
+                """,
                 params,
             ).fetchall()
         else:
             rows = conn.execute(
-                f"SELECT * FROM review_tasks {where} ORDER BY datetime(updated_at) DESC LIMIT ?",
+                f"""
+                SELECT review_tasks.*, tasks.payload AS cached_payload
+                FROM review_tasks
+                LEFT JOIN tasks ON tasks.task_id = review_tasks.task_id
+                {where}
+                ORDER BY datetime(review_tasks.updated_at) DESC
+                LIMIT ?
+                """,
                 (*params, limit),
             ).fetchall()
     return [
         {
             "taskId": row["task_id"],
             "sessionId": row["session_id"],
-            "task": json.loads(row["payload"]),
+            "task": json.loads(row["cached_payload"] or row["payload"]),
             "annotation": json.loads(row["annotation"]) if row["annotation"] else None,
             "caption": row["caption"],
             "status": row["status"],
