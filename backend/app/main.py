@@ -1,8 +1,11 @@
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
 
 from .ai_service import generate_annotation
 from .automation import AutomationRunner
@@ -18,7 +21,7 @@ from .models import (
     SaveRequest,
 )
 from .rcr_client import RcrConflictError, RcrError, rcr_client
-from .settings import RUNTIME_OVERRIDES, get_settings
+from .settings import RUNTIME_OVERRIDES, ROOT_DIR, get_settings
 from .store import get_task as get_local_task
 from .store import list_tasks as list_local_tasks
 from .store import local_statuses, upsert_task
@@ -232,3 +235,14 @@ async def local_tasks(
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict[str, object]:
     return {"tasks": list_local_tasks(status=status, case_type=case_type, limit=limit)}
+
+
+def mount_frontend(directory: Path) -> bool:
+    """Serve the built frontend from the same process; must run after every API route is registered."""
+    if not (directory / "index.html").is_file():
+        return False
+    app.mount("/", StaticFiles(directory=directory, html=True), name="frontend")
+    return True
+
+
+mount_frontend(Path(os.environ.get("AUTOTAG_STATIC_DIR") or ROOT_DIR / "frontend" / "dist"))

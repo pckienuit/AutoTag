@@ -1,3 +1,4 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -6,7 +7,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-STATE_DIR = ROOT_DIR / ".autotag"
+# Deployed releases live in throwaway directories behind a symlink, so state and .env can live elsewhere.
+STATE_DIR = Path(os.environ.get("AUTOTAG_STATE_DIR") or ROOT_DIR / ".autotag")
+ENV_FILE = Path(os.environ.get("AUTOTAG_ENV_FILE") or ROOT_DIR / ".env")
 DB_FILE = STATE_DIR / "autotag.sqlite3"
 
 
@@ -25,7 +28,7 @@ class Settings(BaseSettings):
     auto_submit_enabled: bool = Field(default=False, alias="AUTO_SUBMIT_ENABLED")
     ai_double_check_enabled: bool = Field(default=True, alias="AI_DOUBLE_CHECK_ENABLED")
 
-    model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=ENV_FILE, extra="ignore")
 
 
 # Switches flipped from the UI. They live in memory only, so a restart returns to the .env values.
