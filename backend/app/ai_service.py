@@ -231,6 +231,7 @@ async def review_annotation(
             {"role": "user", "content": content},
         ],
         json_object=True,
+        reasoning_effort=settings.openai_compat_review_effort,
     )
     raw = await request_completion(completion_url(settings), settings.openai_compat_api_key, payload, 120.0)
     return apply_review_patch(annotation, extract_json(raw))

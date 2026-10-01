@@ -150,12 +150,14 @@ def test_generate_annotation_requires_api_key() -> None:
 
 def test_double_check_uses_review_model_and_reports_rejection(monkeypatch) -> None:
     models: list[str] = []
+    efforts: list[object] = []
 
     async def fake_load(sample_id: str, side: str) -> bytes:
         return jpeg_bytes()
 
     async def fake_completion(url: str, api_key: str, payload: dict, timeout: float) -> str:
         models.append(payload["model"])
+        efforts.append(payload.get("reasoning_effort"))
         if len(models) == 1:
             return json.dumps({"select_texts": ["a man"], "target_condition": "Subject 1 sits"})
         return json.dumps({"approved": False, "issues": ["target shows standing"], "patch": {}})
@@ -166,9 +168,31 @@ def test_double_check_uses_review_model_and_reports_rejection(monkeypatch) -> No
     result = asyncio.run(
         generate_annotation(
             make_task(),
-            settings(ai_double_check_enabled=True, openai_compat_model="gen", openai_compat_review_model="rev"),
+            settings(
+                ai_double_check_enabled=True,
+                openai_compat_model="gen",
+                openai_compat_review_model="rev",
+                openai_compat_review_effort="high",
+            ),
         )
     )
 
     assert models == ["gen", "rev"]
+    assert efforts == [None, "high"]  # effort applies to the review call only
     assert result.concerns == ["target shows standing"]
+
+
+def test_image_cache_keeps_only_the_newest_files(tmp_path, monkeypatch) -> None:
+    import os
+
+    from backend.app import images
+
+    monkeypatch.setattr(images, "IMAGE_CACHE_DIR", tmp_path)
+    for index in range(5):
+        path = tmp_path / f"{index}.jpg"
+        path.write_bytes(b"x")
+        os.utime(path, (1000 + index, 1000 + index))
+
+    images.prune_cache(2)
+
+    assert sorted(item.name for item in tmp_path.glob("*.jpg")) == ["3.jpg", "4.jpg"]

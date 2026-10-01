@@ -39,6 +39,7 @@ def runtime_settings() -> RuntimeSettings:
         openai_compat_api_key=env.openai_compat_api_key,
         openai_compat_model=env.openai_compat_model,
         openai_compat_review_model=env.openai_compat_review_model,
+        openai_compat_review_effort=env.openai_compat_review_effort,
         auto_submit_enabled=RUNTIME_OVERRIDES.get("auto_submit", env.auto_submit_enabled),
         ai_double_check_enabled=env.ai_double_check_enabled,
     )
@@ -84,6 +85,7 @@ async def get_runtime_settings(request: Request) -> Response:
             "rcrBaseUrl": get_settings().rcr_base_url,
             "model": settings.openai_compat_model,
             "reviewModel": settings.openai_compat_review_model,
+            "reviewEffort": settings.openai_compat_review_effort,
             "autoSubmitEnabled": settings.auto_submit_enabled,
             "aiDoubleCheckEnabled": settings.ai_double_check_enabled,
             "apiKeyConfigured": bool(settings.openai_compat_api_key),

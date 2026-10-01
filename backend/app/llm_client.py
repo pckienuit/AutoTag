@@ -18,6 +18,7 @@ def chat_payload(
     temperature: float,
     messages: list[dict[str, Any]],
     json_object: bool = False,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
@@ -26,6 +27,8 @@ def chat_payload(
         "stream": False,
         "max_tokens": 4096 if json_object else 512,
     }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     if "gemini" in model.lower():
         payload["max_completion_tokens"] = payload["max_tokens"]
     if json_object and "gemini" not in model.lower():

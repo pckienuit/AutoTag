@@ -91,6 +91,7 @@ export interface AppSettings {
   rcrBaseUrl: string;
   model: string;
   reviewModel: string;
+  reviewEffort: string;
   autoSubmitEnabled: boolean;
   aiDoubleCheckEnabled: boolean;
   apiKeyConfigured: boolean;

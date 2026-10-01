@@ -6,4 +6,4 @@ export AUTOTAG_ENV_FILE="$BASE/shared/.env"
 export AUTOTAG_STATE_DIR="$BASE/shared/state"
 export AUTOTAG_STATIC_DIR="$BASE/current/frontend/dist"
 cd "$BASE/current" || exit 1
-exec python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port "${AUTOTAG_PORT:-8780}"
+exec python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port "${AUTOTAG_PORT:-8780}" --no-access-log

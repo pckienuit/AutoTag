@@ -23,9 +23,11 @@ class Settings:
     openai_compat_base_url: str = "https://api.openai.com/v1"
     openai_compat_api_key: str = ""
     openai_compat_model: str = "ag/gemini-3.8-flash-high"
-    openai_compat_review_model: str = "ag/gemini-pro-agent"
+    openai_compat_review_model: str = "cx/gpt-6-sol"
+    openai_compat_review_effort: str = "high"
     auto_submit_enabled: bool = False
     ai_double_check_enabled: bool = True
+    image_cache_max: int = 400
 
 
 def load_settings(env: dict[str, str] | None = None) -> Settings:
@@ -39,6 +41,12 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         raw = values.get(name)
         return default if raw is None or raw == "" else str(raw).strip().lower() in TRUE_VALUES
 
+    def count(name: str, default: int) -> int:
+        try:
+            return max(0, int(values.get(name) or default))
+        except ValueError:
+            return default
+
     defaults = Settings()
     return Settings(
         rcr_base_url=text("RCR_BASE_URL", defaults.rcr_base_url),
@@ -48,8 +56,10 @@ def load_settings(env: dict[str, str] | None = None) -> Settings:
         openai_compat_api_key=text("OPENAI_COMPAT_API_KEY", ""),
         openai_compat_model=text("OPENAI_COMPAT_MODEL", defaults.openai_compat_model),
         openai_compat_review_model=text("OPENAI_COMPAT_REVIEW_MODEL", defaults.openai_compat_review_model),
+        openai_compat_review_effort=text("OPENAI_COMPAT_REVIEW_EFFORT", defaults.openai_compat_review_effort),
         auto_submit_enabled=flag("AUTO_SUBMIT_ENABLED", defaults.auto_submit_enabled),
         ai_double_check_enabled=flag("AI_DOUBLE_CHECK_ENABLED", defaults.ai_double_check_enabled),
+        image_cache_max=count("IMAGE_CACHE_MAX", defaults.image_cache_max),
     )
 
 

@@ -248,7 +248,7 @@ function App() {
       <header className="topbar">
         <h1>AutoTag RCR</h1>
         <div className="meta">
-          <span>{settings?.model ?? "…"}</span>
+          <span title={`Review: ${settings?.reviewModel ?? "…"} (${settings?.reviewEffort ?? "…"})`}>{settings?.model ?? "…"}</span>
           <label className={`toggle ${settings?.autoSubmitEnabled ? "on" : ""}`} title="When on, automation submits to RCR instead of only saving drafts. Applies from the next task.">
             <input type="checkbox" checked={!!settings?.autoSubmitEnabled} disabled={!settings} onChange={(event) => void toggleAutoSubmit(event.target.checked)} />
             Auto-submit

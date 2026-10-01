@@ -14,6 +14,7 @@ def test_load_settings_reads_flags_and_defaults() -> None:
     assert settings.rcr_username == "u"
     assert settings.openai_compat_model == "ag/gemini-3.8-flash-high"
     assert load_settings({}).auto_submit_enabled is False
+    assert (settings.openai_compat_review_model, settings.openai_compat_review_effort) == ("cx/gpt-6-sol", "high")
     assert load_settings({"AUTO_SUBMIT_ENABLED": ""}).ai_double_check_enabled is True
 
 

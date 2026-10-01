@@ -8,7 +8,7 @@ from urllib.parse import quote
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .rcr_client import rcr_client
-from .settings import STATE_DIR
+from .settings import STATE_DIR, get_settings
 
 
 IMAGE_CACHE_DIR = STATE_DIR / "images"
@@ -38,7 +38,16 @@ async def load_image_bytes(sample_id: str, side: str) -> bytes:
     content, _ = await rcr_client.image_bytes(task_image_url(sample_id, side))
     IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+    prune_cache(get_settings().image_cache_max, keep=path)
     return content
+
+
+def prune_cache(max_files: int, keep: Path | None = None) -> None:
+    """Keep the cache small (the Mi Box has little disk): drop the least recently written images."""
+    files = sorted(IMAGE_CACHE_DIR.glob("*.jpg"), key=lambda item: item.stat().st_mtime, reverse=True)
+    for stale in files[max_files:]:
+        if stale != keep:
+            stale.unlink(missing_ok=True)
 
 
 def identity_subjects(subjects: list[dict[str, Any]]) -> dict[str, int]:
