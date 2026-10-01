@@ -165,13 +165,13 @@ class AutomationRunner:
             instruction = build_instruction(annotation)
             if issues:
                 self.state.needs_review += 1
-                upsert_task(task, "needs_review", annotation.model_dump(), instruction, issues)
+                upsert_task(task, "needs_review", annotation.to_dict(), instruction, issues)
                 return "needs_review"
             submit = settings.auto_submit_enabled
             result = await push_annotation(sample_id, annotation, submit=submit)
             if result["status"] == "blocked":
                 self.state.needs_review += 1
-                upsert_task(task, "needs_review", annotation.model_dump(), instruction, result["issues"])
+                upsert_task(task, "needs_review", annotation.to_dict(), instruction, result["issues"])
                 return "needs_review"
             if submit:
                 self.state.submitted += 1

@@ -155,7 +155,7 @@ def test_push_annotation_submit_uses_revision_returned_by_draft(monkeypatch) -> 
 def test_push_annotation_blocks_invalid_and_submitted(monkeypatch) -> None:
     fake = FakeRcr(revisions=[1])
     monkeypatch.setattr(workflow, "rcr_client", fake)
-    bad = annotation().model_copy(update={"target_condition": "the man is sitting"})
+    bad = annotation().replace(**{"target_condition": "the man is sitting"})
 
     blocked = asyncio.run(workflow.push_annotation("s1", bad, submit=False))
     fake.status = "SUBMITTED"

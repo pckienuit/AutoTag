@@ -1,11 +1,16 @@
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
-from fastapi.staticfiles import StaticFiles
+from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
+from starlette.middleware import Middleware
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+from starlette.routing import Route
+from starlette.staticfiles import StaticFiles
 
 from .ai_service import generate_annotation
 from .automation import AutomationRunner
@@ -13,12 +18,11 @@ from .caption import build_instruction, validate_annotation
 from .errors import error_detail
 from .images import SIDES, load_image_bytes
 from .models import (
-    AutoSubmitRequest,
     AutomationStartRequest,
-    GenerateRequest,
     RcrAnnotation,
     RuntimeSettings,
-    SaveRequest,
+    require_bool,
+    require_sample_id,
 )
 from .rcr_client import RcrConflictError, RcrError, rcr_client
 from .settings import RUNTIME_OVERRIDES, ROOT_DIR, get_settings
@@ -40,21 +44,7 @@ def runtime_settings() -> RuntimeSettings:
     )
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    yield
-    await rcr_client.close()
-
-
-app = FastAPI(title="AutoTag RCR Assistant", lifespan=lifespan)
 automation_runner = AutomationRunner(runtime_settings)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 def http_error(exc: BaseException) -> HTTPException:
@@ -65,61 +55,77 @@ def http_error(exc: BaseException) -> HTTPException:
     return HTTPException(status_code=502, detail=error_detail(exc))
 
 
-@app.get("/api/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def read_json(request: Request) -> dict[str, Any]:
+    try:
+        data = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Request body must be valid JSON.") from None
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="Request body must be a JSON object.")
+    return data
 
 
-@app.get("/api/settings")
-async def get_runtime_settings() -> dict[str, object]:
+def parse(build: Callable[[], Any]) -> Any:
+    """Run a request parser and turn its ValueError into a 422 response."""
+    try:
+        return build()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+async def health(request: Request) -> Response:
+    return JSONResponse({"status": "ok"})
+
+
+async def get_runtime_settings(request: Request) -> Response:
     settings = runtime_settings()
-    return {
-        "rcrBaseUrl": get_settings().rcr_base_url,
-        "model": settings.openai_compat_model,
-        "reviewModel": settings.openai_compat_review_model,
-        "autoSubmitEnabled": settings.auto_submit_enabled,
-        "aiDoubleCheckEnabled": settings.ai_double_check_enabled,
-        "apiKeyConfigured": bool(settings.openai_compat_api_key),
-    }
+    return JSONResponse(
+        {
+            "rcrBaseUrl": get_settings().rcr_base_url,
+            "model": settings.openai_compat_model,
+            "reviewModel": settings.openai_compat_review_model,
+            "autoSubmitEnabled": settings.auto_submit_enabled,
+            "aiDoubleCheckEnabled": settings.ai_double_check_enabled,
+            "apiKeyConfigured": bool(settings.openai_compat_api_key),
+        }
+    )
 
 
-@app.put("/api/settings/auto-submit")
-async def set_auto_submit(request: AutoSubmitRequest) -> dict[str, object]:
-    RUNTIME_OVERRIDES["auto_submit"] = request.enabled
-    return {"autoSubmitEnabled": request.enabled}
+async def set_auto_submit(request: Request) -> Response:
+    data = await read_json(request)
+    enabled = parse(lambda: require_bool(data, "enabled"))
+    RUNTIME_OVERRIDES["auto_submit"] = enabled
+    return JSONResponse({"autoSubmitEnabled": enabled})
 
 
-@app.post("/api/rcr/login")
-async def rcr_login() -> dict[str, object]:
+async def rcr_login(request: Request) -> Response:
     try:
         data = await rcr_client.login()
-        return {"user": data.get("user")}
     except Exception as exc:
         raise http_error(exc) from exc
+    return JSONResponse({"user": data.get("user")})
 
 
-@app.get("/api/rcr/me")
-async def rcr_me() -> dict[str, object]:
+async def rcr_me(request: Request) -> Response:
     try:
         data = await rcr_client.me()
-        return {"user": data.get("user"), "llmEnabled": data.get("llm_enabled")}
     except Exception as exc:
         raise http_error(exc) from exc
+    return JSONResponse({"user": data.get("user"), "llmEnabled": data.get("llm_enabled")})
 
 
-@app.get("/api/rcr/tasks")
-async def rcr_tasks() -> dict[str, object]:
+async def rcr_tasks(request: Request) -> Response:
     """The annotator's queue, each item tagged with this tool's local status."""
     try:
         tasks = await rcr_client.list_tasks()
     except Exception as exc:
         raise http_error(exc) from exc
     local = local_statuses()
-    return {"tasks": [{**item, "localStatus": local.get(item["sample_id"])} for item in tasks]}
+    return JSONResponse({"tasks": [{**item, "localStatus": local.get(item["sample_id"])} for item in tasks]})
 
 
-@app.get("/api/rcr/tasks/{sample_id}")
-async def rcr_task(sample_id: str) -> dict[str, object]:
+async def rcr_task(request: Request) -> Response:
+    sample_id = request.path_params["sample_id"]
     try:
         detail = await rcr_client.get_task(sample_id)
     except Exception as exc:
@@ -128,15 +134,15 @@ async def rcr_task(sample_id: str) -> dict[str, object]:
     if local and local["annotation"]:
         task = detail["task"]
         rule_issues = validate_annotation(
-            RcrAnnotation(**local["annotation"]), [str(i) for i in task.get("candidate_identity_ids") or []]
+            RcrAnnotation.from_dict(local["annotation"]), [str(i) for i in task.get("candidate_identity_ids") or []]
         )
         # Stored issues mix rule violations with AI notes; keep only the notes the rules cannot reproduce.
         local["concerns"] = [item for item in local["issues"] if item not in rule_issues]
-    return {**detail, "local": local}
+    return JSONResponse({**detail, "local": local})
 
 
-@app.get("/api/rcr/images/{sample_id}/{side}")
-async def rcr_image(sample_id: str, side: str) -> Response:
+async def rcr_image(request: Request) -> Response:
+    sample_id, side = request.path_params["sample_id"], request.path_params["side"]
     if side not in SIDES:
         raise HTTPException(status_code=404, detail="Unknown image side.")
     try:
@@ -146,11 +152,13 @@ async def rcr_image(sample_id: str, side: str) -> Response:
     return Response(content=content, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
 
-@app.post("/api/ai/generate")
-async def ai_generate(request: GenerateRequest) -> dict[str, object]:
+async def ai_generate(request: Request) -> Response:
+    data = await read_json(request)
+    sample_id = parse(lambda: require_sample_id(data))
+    notes = str(data.get("notes") or "")
     try:
-        task = (await rcr_client.get_task(request.sample_id))["task"]
-        generation = await generate_annotation(task, runtime_settings(), request.notes)
+        task = (await rcr_client.get_task(sample_id))["task"]
+        generation = await generate_annotation(task, runtime_settings(), notes)
     except Exception as exc:
         raise http_error(exc) from exc
     annotation = canonicalize(generation.annotation)
@@ -159,41 +167,44 @@ async def ai_generate(request: GenerateRequest) -> dict[str, object]:
     issues = [*rule_issues, *generation.concerns]
     instruction = build_instruction(annotation)
     upsert_task(
-        task, "needs_review" if issues else "generated", annotation.model_dump(), instruction, issues
+        task, "needs_review" if issues else "generated", annotation.to_dict(), instruction, issues
     )
-    return {
-        "annotation": annotation.model_dump(),
-        "instruction": instruction,
-        "issues": rule_issues,
-        "concerns": generation.concerns,
-    }
+    return JSONResponse(
+        {
+            "annotation": annotation.to_dict(),
+            "instruction": instruction,
+            "issues": rule_issues,
+            "concerns": generation.concerns,
+        }
+    )
 
 
-@app.post("/api/ai/validate")
-async def ai_validate(request: SaveRequest) -> dict[str, object]:
-    annotation = canonicalize(request.annotation)
-    return {"instruction": build_instruction(annotation), "issues": validate_annotation(annotation)}
+async def ai_validate(request: Request) -> Response:
+    data = await read_json(request)
+    annotation = canonicalize(parse(lambda: RcrAnnotation.from_dict(data.get("annotation"))))
+    return JSONResponse({"instruction": build_instruction(annotation), "issues": validate_annotation(annotation)})
 
 
-@app.post("/api/rcr/draft")
-async def rcr_draft(request: SaveRequest) -> dict[str, object]:
-    return await save_or_submit(request, submit=False)
-
-
-@app.post("/api/rcr/submit")
-async def rcr_submit(request: SaveRequest) -> dict[str, object]:
-    return await save_or_submit(request, submit=True)
-
-
-async def save_or_submit(request: SaveRequest, *, submit: bool) -> dict[str, object]:
+async def save_or_submit(request: Request, *, submit: bool) -> Response:
+    data = await read_json(request)
+    sample_id = parse(lambda: require_sample_id(data))
+    annotation = parse(lambda: RcrAnnotation.from_dict(data.get("annotation")))
     try:
-        return await push_annotation(request.sample_id, request.annotation, submit=submit)
+        return JSONResponse(await push_annotation(sample_id, annotation, submit=submit))
     except Exception as exc:
         raise http_error(exc) from exc
 
 
-@app.post("/api/rcr/tasks/{sample_id}/reopen")
-async def rcr_reopen(sample_id: str) -> dict[str, object]:
+async def rcr_draft(request: Request) -> Response:
+    return await save_or_submit(request, submit=False)
+
+
+async def rcr_submit(request: Request) -> Response:
+    return await save_or_submit(request, submit=True)
+
+
+async def rcr_reopen(request: Request) -> Response:
+    sample_id = request.path_params["sample_id"]
     try:
         task = (await rcr_client.get_task(sample_id))["task"]
         result = await rcr_client.reopen(sample_id, task["revision"])
@@ -207,34 +218,82 @@ async def rcr_reopen(sample_id: str) -> dict[str, object]:
         result.get("annotation"),
         local["instruction"] if local else "",
     )
-    return result
+    return JSONResponse(result)
 
 
-@app.post("/api/automation/start")
-async def automation_start(request: AutomationStartRequest) -> dict[str, object]:
+async def automation_start(request: Request) -> Response:
+    data = await read_json(request)
+    options = parse(lambda: AutomationStartRequest.from_dict(data))
     try:
-        return automation_runner.start(request.mode, request.limit, request.case_type, request.sample_id)
+        status = automation_runner.start(options.mode, options.limit, options.case_type, options.sample_id)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
+    return JSONResponse(status)
 
 
-@app.post("/api/automation/stop")
-async def automation_stop() -> dict[str, object]:
-    return automation_runner.stop()
+async def automation_stop(request: Request) -> Response:
+    return JSONResponse(automation_runner.stop())
 
 
-@app.get("/api/automation/status")
-async def automation_status() -> dict[str, object]:
-    return automation_runner.status()
+async def automation_status(request: Request) -> Response:
+    return JSONResponse(automation_runner.status())
 
 
-@app.get("/api/local/tasks")
-async def local_tasks(
-    status: str = "all",
-    case_type: str | None = None,
-    limit: int = Query(default=200, ge=1, le=1000),
-) -> dict[str, object]:
-    return {"tasks": list_local_tasks(status=status, case_type=case_type, limit=limit)}
+async def local_tasks(request: Request) -> Response:
+    params = request.query_params
+    try:
+        limit = int(params.get("limit", "200"))
+    except ValueError:
+        limit = 0
+    if not 1 <= limit <= 1000:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 1000.")
+    tasks = list_local_tasks(status=params.get("status", "all"), case_type=params.get("case_type"), limit=limit)
+    return JSONResponse({"tasks": tasks})
+
+
+async def http_exception_handler(request: Request, exc: Exception) -> Response:
+    assert isinstance(exc, HTTPException)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
+
+
+@asynccontextmanager
+async def lifespan(app: Starlette):
+    yield
+    await rcr_client.close()
+
+
+app = Starlette(
+    routes=[
+        Route("/api/health", health),
+        Route("/api/settings", get_runtime_settings),
+        Route("/api/settings/auto-submit", set_auto_submit, methods=["PUT"]),
+        Route("/api/rcr/login", rcr_login, methods=["POST"]),
+        Route("/api/rcr/me", rcr_me),
+        Route("/api/rcr/tasks", rcr_tasks),
+        Route("/api/rcr/tasks/{sample_id}", rcr_task),
+        Route("/api/rcr/tasks/{sample_id}/reopen", rcr_reopen, methods=["POST"]),
+        Route("/api/rcr/images/{sample_id}/{side}", rcr_image),
+        Route("/api/rcr/draft", rcr_draft, methods=["POST"]),
+        Route("/api/rcr/submit", rcr_submit, methods=["POST"]),
+        Route("/api/ai/generate", ai_generate, methods=["POST"]),
+        Route("/api/ai/validate", ai_validate, methods=["POST"]),
+        Route("/api/automation/start", automation_start, methods=["POST"]),
+        Route("/api/automation/stop", automation_stop, methods=["POST"]),
+        Route("/api/automation/status", automation_status),
+        Route("/api/local/tasks", local_tasks),
+    ],
+    middleware=[
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    ],
+    exception_handlers={HTTPException: http_exception_handler},
+    lifespan=lifespan,
+)
 
 
 def mount_frontend(directory: Path) -> bool:

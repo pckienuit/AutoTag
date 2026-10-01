@@ -68,8 +68,7 @@ def test_apply_generated_text_cleans_and_pads() -> None:
 
 
 def test_apply_review_patch_changes_only_text() -> None:
-    base = initial_annotation(make_task("DUAL")).model_copy(
-        update={"select_texts": ["a man", "a woman"], "target_condition": "Subject 1 sits and Subject 2 stands"}
+    base = initial_annotation(make_task("DUAL")).replace(**{"select_texts": ["a man", "a woman"], "target_condition": "Subject 1 sits and Subject 2 stands"}
     )
 
     patched, issues = apply_review_patch(

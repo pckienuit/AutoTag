@@ -1,8 +1,6 @@
-# Pure-Python dependencies for the Mi Box (32-bit Termux). pydantic and Pillow have native
-# code and no armv7 wheels, so they come from Termux packages instead:
-#   pkg install python-pydantic python-pillow
-fastapi
-uvicorn
-httpx
-pydantic-settings
-python-dotenv
+# Pure-Python dependencies for the Mi Box (32-bit Termux). Pillow has native code and no
+# armv7 wheel, so it comes from the Termux package instead:  pkg install python-pillow
+starlette==0.46.2
+uvicorn==0.34.0
+httpx==0.28.1
+python-dotenv==1.0.1

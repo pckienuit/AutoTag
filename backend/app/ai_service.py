@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .caption import build_instruction, expected_case_type, is_two_subject
@@ -103,7 +103,7 @@ def boxes_for(task: dict[str, Any], side: str) -> list[dict[str, Any]]:
 
 
 def subject_summary(annotation: RcrAnnotation) -> list[dict[str, Any]]:
-    return [item.model_dump() for item in sorted(annotation.subjects, key=lambda item: item.subject_id)]
+    return [asdict(item) for item in sorted(annotation.subjects, key=lambda item: item.subject_id)]
 
 
 async def append_task_images(
@@ -156,11 +156,9 @@ def apply_generated_text(annotation: RcrAnnotation, data: dict[str, Any]) -> tup
         raw_texts = [raw_texts]
     texts = [cleanup_select_text(item) for item in (raw_texts or [])][:expected]
     texts += [""] * (expected - len(texts))
-    result = annotation.model_copy(
-        update={
-            "select_texts": texts,
-            "target_condition": cleanup_target_condition(data.get("target_condition")),
-        }
+    result = annotation.replace(
+        select_texts=texts,
+        target_condition=cleanup_target_condition(data.get("target_condition")),
     )
     concerns: list[str] = []
     problem = data.get("subject_problem")
@@ -255,4 +253,4 @@ def apply_review_patch(annotation: RcrAnnotation, review: dict[str, Any]) -> tup
     if review.get("approved") is False and not update:
         issues = [str(item) for item in review.get("issues") or [] if str(item).strip()]
         issues = issues or ["Reviewer did not approve but gave no details."]
-    return annotation.model_copy(update=update), issues
+    return annotation.replace(**update), issues

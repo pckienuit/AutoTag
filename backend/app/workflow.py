@@ -8,12 +8,10 @@ from .text_cleanup import cleanup_select_text, cleanup_target_condition
 
 
 def canonicalize(annotation: RcrAnnotation) -> RcrAnnotation:
-    return annotation.model_copy(
-        update={
-            "subjects": sorted(annotation.subjects, key=lambda item: item.subject_id),
-            "select_texts": [cleanup_select_text(text) for text in annotation.select_texts],
-            "target_condition": cleanup_target_condition(annotation.target_condition),
-        }
+    return annotation.replace(
+        subjects=sorted(annotation.subjects, key=lambda item: item.subject_id),
+        select_texts=[cleanup_select_text(text) for text in annotation.select_texts],
+        target_condition=cleanup_target_condition(annotation.target_condition),
     )
 
 
@@ -36,7 +34,7 @@ async def push_annotation(
         return {"status": "blocked", "issues": issues}
     if task["status"] == "SUBMITTED":
         return {"status": "blocked", "issues": ["Task is already submitted. Reopen it before editing."]}
-    payload = annotation.model_dump()
+    payload = annotation.to_dict()
     revision = task["revision"] if revision is None else revision
     for attempt in (1, 2):
         try:
