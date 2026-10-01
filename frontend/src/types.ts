@@ -1,99 +1,104 @@
-export type CaseType = "SINGLE" | "MULTI" | "RELATIONAL";
+export type CaseType = "INDIVIDUAL" | "GROUP" | "DUAL" | "RELATIONAL";
+export const CASE_TYPES: CaseType[] = ["INDIVIDUAL", "GROUP", "DUAL", "RELATIONAL"];
 
 export interface Box {
-  id: string;
-  groupUid?: string;
-  label?: string;
-  rawLabel?: string;
-  x?: number;
-  y?: number;
-  width?: number;
-  height?: number;
+  identity_id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export interface TaskImage {
-  side: string;
-  imageUrl?: string;
-  boxes?: Box[];
+  image_id: string;
+  image_url: string;
+  boxes: Box[];
+}
+
+export interface SubjectAssignment {
+  subject_id: number;
+  identity_ids: string[];
 }
 
 export interface Task {
-  id: string;
-  orderIndex?: number;
-  images?: TaskImage[];
-  blocks?: unknown;
-  claimToken?: string;
-  reservationVersion?: number;
-  draftVersion?: number;
-  canEdit?: boolean;
-  status?: string;
+  sample_id: string;
+  case_type: CaseType;
+  split?: string;
+  status: "UNASSIGNED" | "ASSIGNED" | "IN_PROGRESS" | "SUBMITTED";
+  revision: number;
+  query: TaskImage;
+  target: TaskImage;
+  candidate_identity_ids: string[];
+  initial_subjects: SubjectAssignment[];
 }
 
-export interface SubjectAnnotation {
-  subjectId: number;
-  targetConstraintEnabled: boolean;
-  queryGroupIds: string[];
-  targetGroupIds: string[];
-  descQueryRaw: string;
-  descQueryFinal: string;
-  changeTargetRaw: string;
-  changeTargetFinal: string;
+export interface QueueItem {
+  sample_id: string;
+  case_type: CaseType;
+  split?: string;
+  status: Task["status"];
+  revision: number;
+  localStatus: LocalStatus | null;
 }
 
-export interface Stage2Annotation {
-  schemaVersion: "1.0";
-  caseType: CaseType;
-  targetConstraintEnabled: boolean;
-  relationalSubject1ChangeEnabled: boolean;
-  relationalSubject2ChangeEnabled: boolean;
-  captionRaw: string | null;
-  captionFinal: string | null;
-  pairChangeRaw: string | null;
-  pairChangeFinal: string | null;
-  llmEdits: Array<Record<string, unknown>>;
-  subjects: SubjectAnnotation[];
+export interface RcrAnnotation {
+  case_type: CaseType;
+  subjects: SubjectAssignment[];
+  select_texts: string[];
+  target_condition: string;
 }
 
-export interface Session {
-  id: string;
-  name?: string;
-  poolName?: string;
-  batchName?: string;
-  completed?: number;
-  total?: number;
-  availableTaskCount?: number;
-  draftTaskId?: string;
+export type LocalStatus = "generated" | "needs_review" | "draft_saved" | "submitted" | "failed" | "reviewed";
+
+export interface LocalTask {
+  sampleId: string;
+  status: LocalStatus;
+  annotation: RcrAnnotation | null;
+  instruction: string;
+  issues: string[];
+  concerns?: string[];
+  error: string | null;
+  updatedAt: string;
 }
 
-export type AutomationMode = "all_open" | "one_session" | "fixed_limit" | "current_task";
+export interface TaskDetail {
+  task: Task;
+  annotation: RcrAnnotation | null;
+  local: LocalTask | null;
+}
+
+export type AutomationMode = "all_open" | "one_case" | "fixed_limit" | "single_task";
 
 export interface AutomationStatus {
   running: boolean;
   stop_requested: boolean;
   mode: AutomationMode | null;
   limit: number | null;
+  case_type: CaseType | null;
+  total: number;
   processed: number;
+  drafted: number;
   submitted: number;
   failed: number;
   needs_review: number;
-  current_session_id: string | null;
   current_task_id: string | null;
   message: string;
   next_delay_seconds: number | null;
   next_delay_until: number | null;
 }
 
-export interface ReviewTask {
-  taskId: string;
-  sessionId: string;
-  task: Task;
-  annotation: Stage2Annotation | null;
-  caption: string;
-  status: "not_reviewed" | "reviewed" | "submitted" | "failed" | "needs_review" | string;
-  reviewed: boolean;
-  issues: string[];
-  error: string | null;
-  submissionsUrl: string;
-  workUrl: string;
-  updatedAt: string;
+export interface AppSettings {
+  rcrBaseUrl: string;
+  model: string;
+  reviewModel: string;
+  autoSubmitEnabled: boolean;
+  aiDoubleCheckEnabled: boolean;
+  apiKeyConfigured: boolean;
+}
+
+export interface PushResult {
+  status: "draft_saved" | "submitted" | "blocked";
+  issues?: string[];
+  task?: Task;
+  instruction?: string;
 }

@@ -1,76 +1,63 @@
-import type { AutomationMode, AutomationStatus, ReviewTask, Stage2Annotation, Task } from "./types";
+import type {
+  AppSettings,
+  AutomationMode,
+  AutomationStatus,
+  CaseType,
+  PushResult,
+  QueueItem,
+  RcrAnnotation,
+  TaskDetail
+} from "./types";
 
 const jsonHeaders = { "Content-Type": "application/json" };
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const text = await response.text();
-  const data = text ? JSON.parse(text) : {};
+  let data: Record<string, unknown> = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`Invalid response (HTTP ${response.status})`);
+  }
   if (!response.ok) {
-    throw new Error(data.detail || data.message || `HTTP ${response.status}`);
+    throw new Error(String(data.detail ?? data.message ?? `HTTP ${response.status}`));
   }
   return data as T;
 }
 
+const post = <T>(url: string, body?: unknown) =>
+  request<T>(url, { method: "POST", headers: jsonHeaders, body: body === undefined ? undefined : JSON.stringify(body) });
+
+export const imageUrl = (sampleId: string, side: "query" | "target") =>
+  `/api/rcr/images/${encodeURIComponent(sampleId)}/${side}`;
+
 export const api = {
-  settings: () => request<Record<string, unknown>>("/api/settings"),
-  login: () => request("/api/uit/login", { method: "POST" }),
-  sessions: () => request<{ sessions: unknown[] }>("/api/uit/sessions"),
-  autoCurrentTask: () =>
-    request<{ sessionId: string | null; task: Task | null }>("/api/uit/auto-current-task"),
-  currentTask: (sessionId: string) =>
-    request<{ task: Task | null }>(`/api/uit/sessions/${sessionId}/current-task`),
-  task: (sessionId: string, taskId: string) =>
-    request<{ task: Task }>(`/api/uit/sessions/${sessionId}/tasks/${taskId}`),
-  submissions: (sessionId: string, sent = false) =>
-    request<{ submissions: unknown[] }>(`/api/uit/sessions/${sessionId}/submissions?sent=${sent}`),
-  startAutomation: (mode: AutomationMode, limit: number | null) =>
-    request<AutomationStatus>("/api/automation/start", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ mode, limit })
+  settings: () => request<AppSettings>("/api/settings"),
+  queue: () => request<{ tasks: QueueItem[] }>("/api/rcr/tasks"),
+  task: (sampleId: string) => request<TaskDetail>(`/api/rcr/tasks/${encodeURIComponent(sampleId)}`),
+  generate: (sampleId: string, notes: string) =>
+    post<{ annotation: RcrAnnotation; instruction: string; issues: string[]; concerns: string[] }>("/api/ai/generate", {
+      sample_id: sampleId,
+      notes
     }),
-  stopAutomation: () => request<AutomationStatus>("/api/automation/stop", { method: "POST" }),
-  automationStatus: () => request<AutomationStatus>("/api/automation/status"),
-  reviewTasks: (status = "active", limit = 120) =>
-    request<{ tasks: ReviewTask[]; limit: number; total: number }>(
-      `/api/review/tasks?status=${encodeURIComponent(status)}&limit=${limit}`
+  validate: (sampleId: string, annotation: RcrAnnotation) =>
+    post<{ instruction: string; issues: string[] }>("/api/ai/validate", { sample_id: sampleId, annotation }),
+  saveDraft: (sampleId: string, annotation: RcrAnnotation) =>
+    post<PushResult>("/api/rcr/draft", { sample_id: sampleId, annotation }),
+  submit: (sampleId: string, annotation: RcrAnnotation) =>
+    post<PushResult>("/api/rcr/submit", { sample_id: sampleId, annotation }),
+  reopen: (sampleId: string) =>
+    post<{ task: TaskDetail["task"]; annotation: RcrAnnotation | null }>(
+      `/api/rcr/tasks/${encodeURIComponent(sampleId)}/reopen`
     ),
-  importReviewTasks: (remoteUrl: string) =>
-    request<{ status: string; source: string; imported: number; skipped: number }>("/api/review/import-remote", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ remoteUrl })
+  startAutomation: (mode: AutomationMode, options: { limit?: number; caseType?: CaseType; sampleId?: string }) =>
+    post<AutomationStatus>("/api/automation/start", {
+      mode,
+      limit: options.limit ?? null,
+      case_type: options.caseType ?? null,
+      sample_id: options.sampleId ?? null
     }),
-  approveReview: (sessionId: string, task: Task, annotation: Stage2Annotation, issues: string[] = []) =>
-    request<{ status: string; issues?: string[]; caption?: string }>("/api/review/approve", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ sessionId, task, annotation, issues })
-    }),
-  generate: (task: Task, notes: string) =>
-    request<{ annotation: Stage2Annotation; caption: string; issues: string[] }>("/api/ai/generate", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ task, notes })
-    }),
-  fixText: (text: string, field: string) =>
-    request<{ text: string }>("/api/ai/fix-text", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ text, field })
-    }),
-  save: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0, reviewed = false) =>
-    request<{ status: string; issues?: string[]; warnings?: string[]; caption?: string; task?: Task }>("/api/uit/save", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ sessionId, task, annotation, timeSpent, reviewed })
-    }),
-  submit: (sessionId: string, task: Task, annotation: Stage2Annotation, timeSpent = 0) =>
-    request<{ status: string; issues?: string[] }>("/api/uit/submit", {
-      method: "POST",
-      headers: jsonHeaders,
-      body: JSON.stringify({ sessionId, task, annotation, timeSpent })
-    }),
-  localTasks: () => request<{ tasks: unknown[] }>("/api/local/tasks")
+  stopAutomation: () => post<AutomationStatus>("/api/automation/stop"),
+  automationStatus: () => request<AutomationStatus>("/api/automation/status")
 };
