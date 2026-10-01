@@ -52,3 +52,7 @@ class SaveRequest(BaseModel):
 
 class ApproveRequest(SaveRequest):
     pass
+
+
+class AutoSubmitRequest(BaseModel):
+    enabled: bool

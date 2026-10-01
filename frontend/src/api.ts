@@ -34,6 +34,12 @@ export const imageUrl = (sampleId: string, side: "query" | "target") =>
 
 export const api = {
   settings: () => request<AppSettings>("/api/settings"),
+  setAutoSubmit: (enabled: boolean) =>
+    request<{ autoSubmitEnabled: boolean }>("/api/settings/auto-submit", {
+      method: "PUT",
+      headers: jsonHeaders,
+      body: JSON.stringify({ enabled })
+    }),
   queue: () => request<{ tasks: QueueItem[] }>("/api/rcr/tasks"),
   task: (sampleId: string) => request<TaskDetail>(`/api/rcr/tasks/${encodeURIComponent(sampleId)}`),
   generate: (sampleId: string, notes: string) =>

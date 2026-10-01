@@ -73,6 +73,9 @@ h2 { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap:
   border: 1px solid var(--border-color);
   font-size: 12px;
 }
+.toggle { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border: 1px solid var(--border-color); border-radius: 999px; cursor: pointer; color: var(--text-muted); user-select: none; }
+.toggle input { width: 14px; height: 14px; padding: 0; accent-color: var(--warning); cursor: pointer; }
+.toggle.on { color: var(--warning); border-color: var(--warning); }
 .chip.warn { color: var(--warning); border-color: var(--warning); }
 .chip.bad { color: var(--error); border-color: var(--error); }
 .pill.SUBMITTED { color: var(--success); border-color: var(--success); }

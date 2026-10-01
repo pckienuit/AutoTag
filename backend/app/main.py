@@ -10,6 +10,7 @@ from .caption import build_instruction, validate_annotation
 from .errors import error_detail
 from .images import SIDES, load_image_bytes
 from .models import (
+    AutoSubmitRequest,
     AutomationStartRequest,
     GenerateRequest,
     RcrAnnotation,
@@ -17,7 +18,7 @@ from .models import (
     SaveRequest,
 )
 from .rcr_client import RcrConflictError, RcrError, rcr_client
-from .settings import get_settings
+from .settings import RUNTIME_OVERRIDES, get_settings
 from .store import get_task as get_local_task
 from .store import list_tasks as list_local_tasks
 from .store import local_statuses, upsert_task
@@ -31,7 +32,7 @@ def runtime_settings() -> RuntimeSettings:
         openai_compat_api_key=env.openai_compat_api_key,
         openai_compat_model=env.openai_compat_model,
         openai_compat_review_model=env.openai_compat_review_model,
-        auto_submit_enabled=env.auto_submit_enabled,
+        auto_submit_enabled=RUNTIME_OVERRIDES.get("auto_submit", env.auto_submit_enabled),
         ai_double_check_enabled=env.ai_double_check_enabled,
     )
 
@@ -77,6 +78,12 @@ async def get_runtime_settings() -> dict[str, object]:
         "aiDoubleCheckEnabled": settings.ai_double_check_enabled,
         "apiKeyConfigured": bool(settings.openai_compat_api_key),
     }
+
+
+@app.put("/api/settings/auto-submit")
+async def set_auto_submit(request: AutoSubmitRequest) -> dict[str, object]:
+    RUNTIME_OVERRIDES["auto_submit"] = request.enabled
+    return {"autoSubmitEnabled": request.enabled}
 
 
 @app.post("/api/rcr/login")

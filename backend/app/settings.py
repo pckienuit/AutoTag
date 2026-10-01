@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
 
 
+# Switches flipped from the UI. They live in memory only, so a restart returns to the .env values.
+RUNTIME_OVERRIDES: dict[str, bool] = {}
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

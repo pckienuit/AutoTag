@@ -168,3 +168,31 @@ def test_error_detail_names_empty_httpx_timeout() -> None:
     assert error_detail(exc) == (
         "ReadTimeout: request timed out while calling POST https://example.test/v1/chat/completions"
     )
+
+
+def test_auto_submit_toggle_applies_to_the_next_task(monkeypatch) -> None:
+    from backend.app import main
+
+    overrides: dict[str, bool] = {"auto_submit": False}
+    monkeypatch.setattr(main, "RUNTIME_OVERRIDES", overrides)
+    monkeypatch.setattr(automation, "rcr_client", FakeRcr([make_task(sample_id="a"), make_task(sample_id="b")]))
+    pushes: list[tuple[str, bool]] = []
+
+    async def fake_generate(task, settings, notes=""):
+        return generated()
+
+    async def fake_push(sample_id, annotation, *, submit, revision=None):
+        pushes.append((sample_id, submit))
+        overrides["auto_submit"] = True  # the user ticks the checkbox after the first task
+        return {"status": "draft_saved"}
+
+    async def no_sleep(self) -> None:
+        return None
+
+    monkeypatch.setattr(automation, "generate_annotation", fake_generate)
+    monkeypatch.setattr(automation, "push_annotation", fake_push)
+    monkeypatch.setattr(AutomationRunner, "_sleep_between_tasks", no_sleep)
+    runner = AutomationRunner(main.runtime_settings)
+    asyncio.run(runner._run("all_open", None, None, None))
+
+    assert pushes == [("a", False), ("b", True)]

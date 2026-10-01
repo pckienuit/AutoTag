@@ -220,6 +220,17 @@ function App() {
       await loadQueue();
     });
 
+  async function toggleAutoSubmit(enabled: boolean) {
+    if (enabled && !window.confirm("Turn on auto-submit? Automation will submit tasks to RCR without review, starting from the next task.")) return;
+    try {
+      const result = await api.setAutoSubmit(enabled);
+      setSettings((current) => (current ? { ...current, autoSubmitEnabled: result.autoSubmitEnabled } : current));
+      showToast(enabled ? "Auto-submit ON" : "Auto-submit OFF (draft only)", enabled ? "info" : "success");
+    } catch (error) {
+      showToast(errorText(error), "error");
+    }
+  }
+
   const startAutomation = () =>
     run("Starting automation", async () => {
       const next = await api.startAutomation(mode, {
@@ -238,9 +249,10 @@ function App() {
         <h1>AutoTag RCR</h1>
         <div className="meta">
           <span>{settings?.model ?? "…"}</span>
-          <span className={settings?.autoSubmitEnabled ? "chip warn" : "chip"}>
-            {settings?.autoSubmitEnabled ? "Auto-submit ON" : "Draft only"}
-          </span>
+          <label className={`toggle ${settings?.autoSubmitEnabled ? "on" : ""}`} title="When on, automation submits to RCR instead of only saving drafts. Applies from the next task.">
+            <input type="checkbox" checked={!!settings?.autoSubmitEnabled} disabled={!settings} onChange={(event) => void toggleAutoSubmit(event.target.checked)} />
+            Auto-submit
+          </label>
           {settings && !settings.apiKeyConfigured ? <span className="chip bad">No model API key</span> : null}
           <span>{submittedCount} / {queue.length} submitted</span>
         </div>

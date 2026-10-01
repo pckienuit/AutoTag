@@ -116,14 +116,13 @@ class AutomationRunner:
         sample_id: str | None,
     ) -> None:
         try:
-            settings = self.settings_factory()
             samples = await self.pending_samples(mode, limit, case_type, sample_id)
             self.state.total = len(samples)
             consecutive_failures = 0
             for index, current in enumerate(samples):
                 if self.state.stop_requested:
                     break
-                outcome = await self._process_task(current, settings)
+                outcome = await self._process_task(current, self.settings_factory())
                 consecutive_failures = consecutive_failures + 1 if outcome == "failed" else 0
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     self.state.message = f"Stopped after {consecutive_failures} consecutive failures: {self.state.message}"
