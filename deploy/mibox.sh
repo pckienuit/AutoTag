@@ -30,7 +30,8 @@ else
 fi
 pm2 save >/dev/null
 sleep 4
-curl -fsS "http://127.0.0.1:$PORT/api/health"
+HOST="\$(grep -E '^AUTOTAG_HOST=' "$BASE/shared/.env" | head -1 | cut -d= -f2-)"
+curl -fsS "http://\${HOST:-127.0.0.1}:$PORT/api/health"
 echo
 pm2 logs autotag --lines 15 --nostream
 REMOTE
