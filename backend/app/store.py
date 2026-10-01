@@ -10,215 +10,122 @@ def ensure_state() -> None:
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS tasks (
-                task_id TEXT PRIMARY KEY,
-                session_id TEXT,
-                payload TEXT NOT NULL,
-                annotation TEXT,
-                status TEXT NOT NULL DEFAULT 'local',
-                needs_review INTEGER NOT NULL DEFAULT 1,
-                reviewed INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS review_tasks (
-                task_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                annotation TEXT,
-                caption TEXT,
+            CREATE TABLE IF NOT EXISTS rcr_tasks (
+                sample_id TEXT PRIMARY KEY,
+                case_type TEXT NOT NULL,
+                split TEXT,
                 status TEXT NOT NULL,
+                revision INTEGER,
+                payload TEXT NOT NULL,
+                annotation TEXT,
+                instruction TEXT NOT NULL DEFAULT '',
                 issues TEXT NOT NULL DEFAULT '[]',
                 error TEXT,
-                submit_result TEXT,
                 reviewed INTEGER NOT NULL DEFAULT 0,
-                submissions_url TEXT NOT NULL,
-                work_url TEXT NOT NULL,
                 updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
-        _ensure_column(conn, "tasks", "reviewed", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(conn, "review_tasks", "reviewed", "INTEGER NOT NULL DEFAULT 0")
-
-
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-    if column not in columns:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def upsert_task(
-    task_id: str,
-    session_id: str | None,
-    payload: dict[str, Any],
-    annotation: dict[str, Any] | None = None,
-    status: str = "local",
-    needs_review: bool = True,
-    reviewed: bool = False,
-) -> None:
-    ensure_state()
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.execute(
-            """
-            INSERT INTO tasks(task_id, session_id, payload, annotation, status, needs_review, reviewed)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(task_id) DO UPDATE SET
-                session_id = excluded.session_id,
-                payload = excluded.payload,
-                annotation = COALESCE(excluded.annotation, tasks.annotation),
-                status = excluded.status,
-                needs_review = excluded.needs_review,
-                reviewed = excluded.reviewed,
-                updated_at = CURRENT_TIMESTAMP
-            """,
-            (
-                task_id,
-                session_id,
-                json.dumps(payload),
-                json.dumps(annotation) if annotation is not None else None,
-                status,
-                1 if needs_review else 0,
-                1 if reviewed else 0,
-            ),
-        )
-
-
-def upsert_review_task(
-    task_id: str,
-    session_id: str,
-    payload: dict[str, Any],
+    task: dict[str, Any],
     status: str,
     annotation: dict[str, Any] | None = None,
-    caption: str = "",
+    instruction: str = "",
     issues: list[str] | None = None,
     error: str | None = None,
-    submit_result: dict[str, Any] | None = None,
     reviewed: bool = False,
 ) -> None:
     ensure_state()
-    submissions_url = f"https://aiclub.uit.edu.vn/label_cpr/annotator/sessions/{session_id}/submissions"
-    work_url = f"https://aiclub.uit.edu.vn/label_cpr/annotator/sessions/{session_id}/work?taskId={task_id}"
     with sqlite3.connect(DB_FILE) as conn:
         conn.execute(
             """
-            INSERT INTO review_tasks(
-                task_id, session_id, payload, annotation, caption, status, issues,
-                error, submit_result, reviewed, submissions_url, work_url
+            INSERT INTO rcr_tasks(
+                sample_id, case_type, split, status, revision, payload,
+                annotation, instruction, issues, error, reviewed
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(task_id) DO UPDATE SET
-                session_id = excluded.session_id,
-                payload = excluded.payload,
-                annotation = COALESCE(excluded.annotation, review_tasks.annotation),
-                caption = excluded.caption,
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(sample_id) DO UPDATE SET
+                case_type = excluded.case_type,
+                split = excluded.split,
                 status = excluded.status,
+                revision = excluded.revision,
+                payload = excluded.payload,
+                annotation = COALESCE(excluded.annotation, rcr_tasks.annotation),
+                instruction = excluded.instruction,
                 issues = excluded.issues,
                 error = excluded.error,
-                submit_result = excluded.submit_result,
                 reviewed = excluded.reviewed,
-                submissions_url = excluded.submissions_url,
-                work_url = excluded.work_url,
                 updated_at = CURRENT_TIMESTAMP
             """,
             (
-                task_id,
-                session_id,
-                json.dumps(payload),
-                json.dumps(annotation) if annotation is not None else None,
-                caption,
+                task["sample_id"],
+                task["case_type"],
+                task.get("split"),
                 status,
+                task.get("revision"),
+                json.dumps(task),
+                json.dumps(annotation) if annotation is not None else None,
+                instruction,
                 json.dumps(issues or []),
                 error,
-                json.dumps(submit_result) if submit_result is not None else None,
                 1 if reviewed else 0,
-                submissions_url,
-                work_url,
             ),
         )
 
 
-def list_tasks() -> list[dict[str, Any]]:
+def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "sampleId": row["sample_id"],
+        "caseType": row["case_type"],
+        "split": row["split"],
+        "status": row["status"],
+        "revision": row["revision"],
+        "task": json.loads(row["payload"]),
+        "annotation": json.loads(row["annotation"]) if row["annotation"] else None,
+        "instruction": row["instruction"],
+        "issues": json.loads(row["issues"]),
+        "error": row["error"],
+        "reviewed": bool(row["reviewed"]),
+        "updatedAt": row["updated_at"],
+    }
+
+
+def get_task(sample_id: str) -> dict[str, Any] | None:
     ensure_state()
+    with sqlite3.connect(DB_FILE) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM rcr_tasks WHERE sample_id = ?", (sample_id,)).fetchone()
+    return row_to_dict(row) if row else None
+
+
+def local_statuses() -> dict[str, str]:
+    ensure_state()
+    with sqlite3.connect(DB_FILE) as conn:
+        return dict(conn.execute("SELECT sample_id, status FROM rcr_tasks").fetchall())
+
+
+def list_tasks(
+    *,
+    status: str | None = None,
+    case_type: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    ensure_state()
+    filters: list[str] = []
+    params: list[Any] = []
+    if status and status != "all":
+        filters.append("status = ?")
+        params.append(status)
+    if case_type:
+        filters.append("case_type = ?")
+        params.append(case_type)
+    where = f"WHERE {' AND '.join(filters)}" if filters else ""
     with sqlite3.connect(DB_FILE) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT * FROM tasks ORDER BY datetime(updated_at) DESC LIMIT 200"
+            f"SELECT * FROM rcr_tasks {where} ORDER BY datetime(updated_at) DESC LIMIT ?",
+            (*params, limit),
         ).fetchall()
-    return [
-        {
-            "taskId": row["task_id"],
-            "sessionId": row["session_id"],
-            "task": json.loads(row["payload"]),
-            "annotation": json.loads(row["annotation"]) if row["annotation"] else None,
-            "status": row["status"],
-            "needsReview": bool(row["needs_review"]),
-            "reviewed": bool(row["reviewed"]),
-            "updatedAt": row["updated_at"],
-        }
-        for row in rows
-    ]
-
-
-def list_review_tasks(
-    limit: int | None = None,
-    *,
-    status: str | None = None,
-    include_reviewed: bool = False,
-) -> list[dict[str, Any]]:
-    ensure_state()
-    with sqlite3.connect(DB_FILE) as conn:
-        conn.row_factory = sqlite3.Row
-        filters: list[str] = []
-        params: list[Any] = []
-        if status and status != "all":
-            filters.append("review_tasks.status = ?")
-            params.append(status)
-        if not include_reviewed:
-            filters.append("review_tasks.reviewed = 0")
-            filters.append("review_tasks.status != 'reviewed'")
-        where = f"WHERE {' AND '.join(filters)}" if filters else ""
-        if limit is None:
-            rows = conn.execute(
-                f"""
-                SELECT review_tasks.*, tasks.payload AS cached_payload
-                FROM review_tasks
-                LEFT JOIN tasks ON tasks.task_id = review_tasks.task_id
-                {where}
-                ORDER BY datetime(review_tasks.updated_at) DESC
-                """,
-                params,
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"""
-                SELECT review_tasks.*, tasks.payload AS cached_payload
-                FROM review_tasks
-                LEFT JOIN tasks ON tasks.task_id = review_tasks.task_id
-                {where}
-                ORDER BY datetime(review_tasks.updated_at) DESC
-                LIMIT ?
-                """,
-                (*params, limit),
-            ).fetchall()
-    return [
-        {
-            "taskId": row["task_id"],
-            "sessionId": row["session_id"],
-            "task": json.loads(row["cached_payload"] or row["payload"]),
-            "annotation": json.loads(row["annotation"]) if row["annotation"] else None,
-            "caption": row["caption"],
-            "status": row["status"],
-            "reviewed": bool(row["reviewed"]),
-            "issues": json.loads(row["issues"]),
-            "error": row["error"],
-            "submitResult": json.loads(row["submit_result"]) if row["submit_result"] else None,
-            "submissionsUrl": row["submissions_url"],
-            "workUrl": row["work_url"],
-            "updatedAt": row["updated_at"],
-        }
-        for row in rows
-    ]
+    return [row_to_dict(row) for row in rows]

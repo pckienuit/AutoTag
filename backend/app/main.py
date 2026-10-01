@@ -1,19 +1,27 @@
 from contextlib import asynccontextmanager
 
-import httpx
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
-from .ai_service import cleanup_stage2_annotation, fix_annotation_text, generate_annotation
+from .ai_service import generate_annotation
 from .automation import AutomationRunner
-from .caption import build_caption, validate_annotation
+from .caption import build_instruction, validate_annotation
 from .errors import error_detail
-from .image_cache import cache_task_images, cached_image_path
-from .models import AutomationStartRequest, FixTextRequest, GenerateRequest, ReviewApproveRequest, ReviewImportRequest, RuntimeSettings, Stage2Annotation, SyncRequest
+from .images import SIDES, load_image_bytes
+from .models import (
+    AutomationStartRequest,
+    GenerateRequest,
+    RcrAnnotation,
+    RuntimeSettings,
+    SaveRequest,
+)
+from .rcr_client import RcrConflictError, RcrError, rcr_client
 from .settings import get_settings
-from .store import list_review_tasks, list_tasks, upsert_review_task, upsert_task
-from .uit_client import uit_client
+from .store import get_task as get_local_task
+from .store import list_tasks as list_local_tasks
+from .store import local_statuses, upsert_task
+from .workflow import canonicalize, push_annotation
 
 
 def runtime_settings() -> RuntimeSettings:
@@ -31,10 +39,10 @@ def runtime_settings() -> RuntimeSettings:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    await uit_client.close()
+    await rcr_client.close()
 
 
-app = FastAPI(title="AutoTag CPR Assistant", lifespan=lifespan)
+app = FastAPI(title="AutoTag RCR Assistant", lifespan=lifespan)
 automation_runner = AutomationRunner(runtime_settings)
 app.add_middleware(
     CORSMiddleware,
@@ -45,189 +53,12 @@ app.add_middleware(
 )
 
 
-SAVE_REFRESH_RETRY_STATUSES = {400, 409}
-FORMAT_RETRY_STATUSES = {400, 422}
-FORMAT_ERROR_MARKERS = (
-    "caption_format",
-    "caption format",
-    "format",
-    "punctuation",
-    "comma",
-    "period",
-)
-
-
-def canonicalize_for_uit(annotation: Stage2Annotation) -> Stage2Annotation:
-    cleaned = cleanup_stage2_annotation(annotation)
-    caption = build_caption(cleaned)
-    cleaned.captionRaw = caption
-    cleaned.captionFinal = caption
-    return cleaned
-
-
-def is_uit_format_error(exc: httpx.HTTPStatusError) -> bool:
-    if exc.response.status_code not in FORMAT_RETRY_STATUSES:
-        return False
-    body = exc.response.text.lower()
-    return any(marker in body for marker in FORMAT_ERROR_MARKERS)
-
-
-def review_import_url(remote_url: str) -> str:
-    url = remote_url.strip().rstrip("/")
-    if not url:
-        raise ValueError("Remote review queue URL is required.")
-    if url.endswith("/api/review/tasks"):
-        return url
-    return f"{url}/api/review/tasks"
-
-
-def remote_base_url(import_url: str) -> str:
-    marker = "/api/review/tasks"
-    if import_url.endswith(marker):
-        return import_url[: -len(marker)].rstrip("/")
-    return import_url.rstrip("/")
-
-
-def task_has_images(task: object) -> bool:
-    return isinstance(task, dict) and bool(task.get("images"))
-
-
-def is_unreviewed_review_item(item: object) -> bool:
-    if not isinstance(item, dict):
-        return False
-    if item.get("reviewed") is True:
-        return False
-    return str(item.get("status") or "").lower() != "reviewed"
-
-
-def importable_annotation(annotation: object) -> dict[str, object] | None:
-    if not isinstance(annotation, dict):
-        return None
-    if not isinstance(annotation.get("subjects"), list):
-        return None
-    normalized = dict(annotation)
-    if not isinstance(normalized.get("llmEdits"), list):
-        normalized["llmEdits"] = []
-    return normalized
-
-
-def annotation_from_task(task: dict[str, object]) -> dict[str, object] | None:
-    blocks = task.get("blocks")
-    if not isinstance(blocks, dict):
-        return None
-    return importable_annotation(blocks)
-
-
-async def hydrate_remote_review_item(
-    client: httpx.AsyncClient,
-    base_url: str,
-    item: dict[str, object],
-) -> dict[str, object]:
-    task = item.get("task")
-    session_id = item.get("sessionId")
-    task_id = item.get("taskId") or (task.get("id") if isinstance(task, dict) else None)
-    if task_has_images(task) or not session_id or not task_id:
-        return item
-
-    response = await client.get(
-        f"{base_url}/api/uit/sessions/{session_id}/tasks/{task_id}"
-    )
-    response.raise_for_status()
-    data = response.json()
-    remote_task = data.get("task") if isinstance(data, dict) else None
-    if not isinstance(remote_task, dict):
-        return item
-
-    hydrated = {**item, "task": remote_task}
-    if importable_annotation(hydrated.get("annotation")) is None:
-        task_annotation = annotation_from_task(remote_task)
-        if task_annotation is not None:
-            hydrated["annotation"] = task_annotation
-    if not hydrated.get("caption"):
-        hydrated["caption"] = str(remote_task.get("caption") or "")
-    return hydrated
-
-
-async def import_review_item(item: dict[str, object]) -> tuple[bool, int]:
-    task = item.get("task")
-    session_id = item.get("sessionId")
-    task_id = item.get("taskId") or (task.get("id") if isinstance(task, dict) else None)
-    if not isinstance(task, dict) or not task_id or not session_id:
-        return False, 0
-
-    task_id_text = str(task_id)
-    session_id_text = str(session_id)
-    task, cached = await cache_task_images(task)
-    annotation = importable_annotation(item.get("annotation"))
-    status = str(item.get("status") or "not_reviewed")
-    issues = item.get("issues") if isinstance(item.get("issues"), list) else []
-    submit_result = item.get("submitResult") if isinstance(item.get("submitResult"), dict) else None
-    caption = str(item.get("caption") or "")
-    error = str(item.get("error")) if item.get("error") is not None else None
-
-    upsert_task(
-        task_id_text,
-        session_id_text,
-        task,
-        annotation,
-        status=status,
-        needs_review=True,
-        reviewed=False,
-    )
-    upsert_review_task(
-        task_id_text,
-        session_id_text,
-        task,
-        status,
-        annotation,
-        caption,
-        [str(issue) for issue in issues],
-        error=error,
-        submit_result=submit_result,
-        reviewed=False,
-    )
-    return True, cached
-
-
-async def import_remote_review_tasks(remote_url: str) -> dict[str, object]:
-    url = review_import_url(remote_url)
-    base_url = remote_base_url(url)
-    async with httpx.AsyncClient(timeout=45.0, follow_redirects=True) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        data = response.json()
-        tasks = data.get("tasks") if isinstance(data, dict) else None
-        if not isinstance(tasks, list):
-            raise ValueError("Remote response must be an object with a tasks list.")
-
-        imported = 0
-        skipped = 0
-        hydrated = 0
-        cached = 0
-        for item in tasks:
-            if not is_unreviewed_review_item(item):
-                skipped += 1
-                continue
-            if isinstance(item, dict) and not task_has_images(item.get("task")):
-                item = await hydrate_remote_review_item(client, base_url, item)
-                if task_has_images(item.get("task")):
-                    hydrated += 1
-            imported_item = False
-            if isinstance(item, dict):
-                imported_item, cached_count = await import_review_item(item)
-                cached += cached_count
-            if imported_item:
-                imported += 1
-            else:
-                skipped += 1
-    return {
-        "status": "imported",
-        "source": url,
-        "imported": imported,
-        "skipped": skipped,
-        "hydrated": hydrated,
-        "cached": cached,
-    }
+def http_error(exc: BaseException) -> HTTPException:
+    if isinstance(exc, RcrConflictError):
+        return HTTPException(status_code=409, detail=error_detail(exc))
+    if isinstance(exc, RcrError) and exc.status == 422:
+        return HTTPException(status_code=422, detail=exc.message)
+    return HTTPException(status_code=502, detail=error_detail(exc))
 
 
 @app.get("/api/health")
@@ -238,112 +69,141 @@ async def health() -> dict[str, str]:
 @app.get("/api/settings")
 async def get_runtime_settings() -> dict[str, object]:
     settings = runtime_settings()
-    data = settings.model_dump()
-    data["openai_compat_api_key"] = bool(settings.openai_compat_api_key)
-    return data
+    return {
+        "rcrBaseUrl": get_settings().rcr_base_url,
+        "model": settings.openai_compat_model,
+        "reviewModel": settings.openai_compat_review_model,
+        "autoSubmitEnabled": settings.auto_submit_enabled,
+        "aiDoubleCheckEnabled": settings.ai_double_check_enabled,
+        "apiKeyConfigured": bool(settings.openai_compat_api_key),
+    }
 
 
-@app.post("/api/uit/login")
-async def uit_login() -> dict[str, object]:
+@app.post("/api/rcr/login")
+async def rcr_login() -> dict[str, object]:
     try:
-        result = await uit_client.login()
-        me = await uit_client.me()
-        return {"login": result, "me": me}
+        data = await rcr_client.login()
+        return {"user": data.get("user")}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
 
 
-@app.get("/api/uit/me")
-async def uit_me() -> dict[str, object]:
+@app.get("/api/rcr/me")
+async def rcr_me() -> dict[str, object]:
     try:
-        return {"me": await uit_client.me()}
+        data = await rcr_client.me()
+        return {"user": data.get("user"), "llmEnabled": data.get("llm_enabled")}
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
 
 
-@app.get("/api/uit/sessions")
-async def uit_sessions() -> dict[str, object]:
+@app.get("/api/rcr/tasks")
+async def rcr_tasks() -> dict[str, object]:
+    """The annotator's queue, each item tagged with this tool's local status."""
     try:
-        return await uit_client.sessions()
+        tasks = await rcr_client.list_tasks()
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
+    local = local_statuses()
+    return {"tasks": [{**item, "localStatus": local.get(item["sample_id"])} for item in tasks]}
 
 
-def session_has_open_tasks(session: dict[str, object]) -> bool:
-    available = session.get("availableTaskCount")
-    if isinstance(available, int) and available > 0:
-        return True
-    completed = session.get("completed")
-    total = session.get("total")
-    if isinstance(completed, int) and isinstance(total, int) and completed < total:
-        return True
-    return bool(session.get("draftTaskId"))
-
-
-@app.get("/api/uit/auto-current-task")
-async def uit_auto_current_task() -> dict[str, object]:
+@app.get("/api/rcr/tasks/{sample_id}")
+async def rcr_task(sample_id: str) -> dict[str, object]:
     try:
-        data = await uit_client.sessions()
-        sessions = data.get("sessions") or []
-        candidates = [
-            session for session in sessions
-            if isinstance(session, dict) and session_has_open_tasks(session)
-        ]
-        for session in [*candidates, *[item for item in sessions if item not in candidates]]:
-            if not isinstance(session, dict) or not session.get("id"):
-                continue
-            session_id = str(session["id"])
-            task_data = await uit_client.current_task(session_id)
-            task = task_data.get("task")
-            if task:
-                task, _ = await cache_task_images(task)
-                upsert_task(str(task["id"]), session_id, task, status="fetched")
-                return {"session": session, "sessionId": session_id, "task": task}
-        return {"session": None, "sessionId": None, "task": None}
+        detail = await rcr_client.get_task(sample_id)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
+    local = get_local_task(sample_id)
+    if local and local["annotation"]:
+        task = detail["task"]
+        rule_issues = validate_annotation(
+            RcrAnnotation(**local["annotation"]), [str(i) for i in task.get("candidate_identity_ids") or []]
+        )
+        # Stored issues mix rule violations with AI notes; keep only the notes the rules cannot reproduce.
+        local["concerns"] = [item for item in local["issues"] if item not in rule_issues]
+    return {**detail, "local": local}
 
 
-@app.get("/api/uit/sessions/{session_id}/current-task")
-async def uit_current_task(session_id: str) -> dict[str, object]:
+@app.get("/api/rcr/images/{sample_id}/{side}")
+async def rcr_image(sample_id: str, side: str) -> Response:
+    if side not in SIDES:
+        raise HTTPException(status_code=404, detail="Unknown image side.")
     try:
-        data = await uit_client.current_task(session_id)
-        task = data.get("task")
-        if task:
-            task, _ = await cache_task_images(task)
-            data = {**data, "task": task}
-            upsert_task(str(task["id"]), session_id, task, status="fetched")
-        return data
+        content = await load_image_bytes(sample_id, side)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
+    return Response(content=content, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
 
-@app.get("/api/uit/sessions/{session_id}/submissions")
-async def uit_submissions(session_id: str, sent: bool = False) -> dict[str, object]:
+@app.post("/api/ai/generate")
+async def ai_generate(request: GenerateRequest) -> dict[str, object]:
     try:
-        return await uit_client.submissions(session_id, sent=sent)
+        task = (await rcr_client.get_task(request.sample_id))["task"]
+        generation = await generate_annotation(task, runtime_settings(), request.notes)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
+    annotation = canonicalize(generation.annotation)
+    candidates = [str(i) for i in task.get("candidate_identity_ids") or []]
+    rule_issues = validate_annotation(annotation, candidates)
+    issues = [*rule_issues, *generation.concerns]
+    instruction = build_instruction(annotation)
+    upsert_task(
+        task, "needs_review" if issues else "generated", annotation.model_dump(), instruction, issues
+    )
+    return {
+        "annotation": annotation.model_dump(),
+        "instruction": instruction,
+        "issues": rule_issues,
+        "concerns": generation.concerns,
+    }
 
 
-@app.get("/api/uit/sessions/{session_id}/tasks/{task_id}")
-async def uit_task(session_id: str, task_id: str) -> dict[str, object]:
+@app.post("/api/ai/validate")
+async def ai_validate(request: SaveRequest) -> dict[str, object]:
+    annotation = canonicalize(request.annotation)
+    return {"instruction": build_instruction(annotation), "issues": validate_annotation(annotation)}
+
+
+@app.post("/api/rcr/draft")
+async def rcr_draft(request: SaveRequest) -> dict[str, object]:
+    return await save_or_submit(request, submit=False)
+
+
+@app.post("/api/rcr/submit")
+async def rcr_submit(request: SaveRequest) -> dict[str, object]:
+    return await save_or_submit(request, submit=True)
+
+
+async def save_or_submit(request: SaveRequest, *, submit: bool) -> dict[str, object]:
     try:
-        data = await uit_client.task(task_id, session_id)
-        task = data.get("task")
-        if task:
-            task, _ = await cache_task_images(task)
-            data = {**data, "task": task}
-            upsert_task(str(task["id"]), session_id, task, status="fetched")
-        return data
+        return await push_annotation(request.sample_id, request.annotation, submit=submit)
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
+        raise http_error(exc) from exc
+
+
+@app.post("/api/rcr/tasks/{sample_id}/reopen")
+async def rcr_reopen(sample_id: str) -> dict[str, object]:
+    try:
+        task = (await rcr_client.get_task(sample_id))["task"]
+        result = await rcr_client.reopen(sample_id, task["revision"])
+    except Exception as exc:
+        raise http_error(exc) from exc
+    reopened = {**task, **result.get("task", {})}
+    local = get_local_task(sample_id)
+    upsert_task(
+        reopened,
+        "draft_saved",
+        result.get("annotation"),
+        local["instruction"] if local else "",
+    )
+    return result
 
 
 @app.post("/api/automation/start")
 async def automation_start(request: AutomationStartRequest) -> dict[str, object]:
     try:
-        return automation_runner.start(request.mode, request.limit)
+        return automation_runner.start(request.mode, request.limit, request.case_type, request.sample_id)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
 
@@ -358,266 +218,10 @@ async def automation_status() -> dict[str, object]:
     return automation_runner.status()
 
 
-@app.get("/api/review/tasks")
-async def review_tasks(
-    status: str = "active",
-    limit: int = Query(default=120, ge=1, le=1000),
-    include_reviewed: bool = False,
-) -> dict[str, object]:
-    task_status = None if status in {"active", "all"} else status
-    include_done = include_reviewed or status in {"all", "reviewed"}
-    tasks = list_review_tasks(limit=limit, status=task_status, include_reviewed=include_done)
-    return {
-        "tasks": tasks,
-        "limit": limit,
-        "total": len(tasks),
-    }
-
-
-@app.post("/api/review/import-remote")
-async def review_import_remote(request: ReviewImportRequest) -> dict[str, object]:
-    env = get_settings()
-    remote_url = request.remoteUrl or env.remote_review_queue_url
-    try:
-        return await import_remote_review_tasks(remote_url or "")
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
-
-
-@app.get("/api/review/submissions/{session_id}")
-async def review_submissions(session_id: str) -> dict[str, object]:
-    try:
-        return await uit_client.submissions(session_id, sent=True)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
-
-
-@app.post("/api/review/approve")
-async def approve_review_task(request: ReviewApproveRequest) -> dict[str, object]:
-    annotation = canonicalize_for_uit(request.annotation)
-    task_id = str(request.task["id"])
-    upsert_task(
-        task_id,
-        request.sessionId,
-        request.task,
-        annotation.model_dump(),
-        status="reviewed",
-        needs_review=False,
-        reviewed=True,
-    )
-    upsert_review_task(
-        task_id,
-        request.sessionId,
-        request.task,
-        "reviewed",
-        annotation.model_dump(),
-        annotation.captionFinal or "",
-        request.issues,
-        reviewed=True,
-    )
-    return {
-        "status": "reviewed_local",
-        "caption": annotation.captionFinal,
-        "issues": request.issues,
-    }
-
-
-@app.post("/api/ai/generate")
-async def ai_generate(request: GenerateRequest) -> dict[str, object]:
-    try:
-        annotation = await generate_annotation(request.task, runtime_settings(), request.notes)
-        issues = validate_annotation(annotation)
-        upsert_task(
-            str(request.task["id"]),
-            None,
-            request.task,
-            annotation.model_dump(),
-            status="generated",
-            needs_review=True,
-        )
-        return {
-            "annotation": annotation.model_dump(),
-            "caption": build_caption(annotation),
-            "issues": issues,
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
-
-
-@app.post("/api/ai/fix-text")
-async def ai_fix_text(request: FixTextRequest) -> dict[str, object]:
-    try:
-        return {"text": await fix_annotation_text(request.text, request.field, runtime_settings())}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=error_detail(exc)) from exc
-
-
-@app.post("/api/uit/save")
-async def save_annotation(request: SyncRequest) -> dict[str, object]:
-    annotation = canonicalize_for_uit(request.annotation)
-    issues = validate_annotation(annotation)
-    reviewed = request.reviewed
-    task = request.task
-    result: dict[str, object] = {}
-    warnings: list[str] = []
-    try:
-        try:
-            result = await uit_client.save(
-                task,
-                annotation.model_dump(),
-                request.timeSpent,
-                request.sessionId,
-            )
-        except httpx.HTTPStatusError as exc:
-            if is_uit_format_error(exc):
-                annotation = canonicalize_for_uit(annotation)
-                warnings.append("UIT rejected annotation format once; retried with canonical caption.")
-                result = await uit_client.save(
-                    task,
-                    annotation.model_dump(),
-                    request.timeSpent,
-                    request.sessionId,
-                )
-            elif exc.response.status_code in SAVE_REFRESH_RETRY_STATUSES and request.sessionId:
-                latest = await uit_client.task(str(request.task["id"]), request.sessionId)
-                task = {**task, **(latest.get("task") or {})}
-                try:
-                    result = await uit_client.save(
-                        task,
-                        annotation.model_dump(),
-                        request.timeSpent,
-                        request.sessionId,
-                    )
-                except httpx.HTTPStatusError as retry_exc:
-                    if is_uit_format_error(retry_exc):
-                        annotation = canonicalize_for_uit(annotation)
-                        warnings.append("UIT rejected annotation format once; retried with canonical caption.")
-                        result = await uit_client.save(
-                            task,
-                            annotation.model_dump(),
-                            request.timeSpent,
-                            request.sessionId,
-                        )
-                    elif retry_exc.response.status_code == 409 and reviewed:
-                        warnings.append("UIT rejected save because the task is already submitted or locked; marked reviewed locally.")
-                    else:
-                        raise
-            else:
-                raise
-        task = {**task, **(result.get("task") or {})}
-        upsert_task(
-            str(request.task["id"]),
-            request.sessionId,
-            task,
-            annotation.model_dump(),
-            status="reviewed" if reviewed else "saved",
-            needs_review=not reviewed,
-            reviewed=reviewed,
-        )
-        if reviewed and request.sessionId:
-            upsert_review_task(
-                str(request.task["id"]),
-                request.sessionId,
-                task,
-                "reviewed",
-                annotation.model_dump(),
-                annotation.captionFinal or "",
-                issues,
-                submit_result=result,
-                reviewed=True,
-            )
-        return {
-            "status": "saved" if result else "reviewed_local",
-            "result": result,
-            "task": task,
-            "caption": annotation.captionFinal,
-            "issues": issues,
-            "warnings": warnings,
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
-
-
-@app.post("/api/uit/submit")
-async def submit_annotation(request: SyncRequest) -> dict[str, object]:
-    annotation = canonicalize_for_uit(request.annotation)
-    issues = validate_annotation(annotation)
-    if issues:
-        return {"status": "blocked", "issues": issues}
-    task = request.task
-    try:
-        try:
-            result = await uit_client.submit(
-                task,
-                annotation.model_dump(),
-                request.timeSpent,
-                request.sessionId,
-            )
-        except httpx.HTTPStatusError as exc:
-            if is_uit_format_error(exc):
-                annotation = canonicalize_for_uit(annotation)
-                result = await uit_client.submit(
-                    task,
-                    annotation.model_dump(),
-                    request.timeSpent,
-                    request.sessionId,
-                )
-            elif exc.response.status_code == 409 and request.sessionId:
-                latest = await uit_client.task(str(request.task["id"]), request.sessionId)
-                task = {**task, **(latest.get("task") or {})}
-                try:
-                    result = await uit_client.submit(
-                        task,
-                        annotation.model_dump(),
-                        request.timeSpent,
-                        request.sessionId,
-                    )
-                except httpx.HTTPStatusError as retry_exc:
-                    if not is_uit_format_error(retry_exc):
-                        raise
-                    annotation = canonicalize_for_uit(annotation)
-                    result = await uit_client.submit(
-                        task,
-                        annotation.model_dump(),
-                        request.timeSpent,
-                        request.sessionId,
-                    )
-            else:
-                raise
-        upsert_task(
-            str(request.task["id"]),
-            request.sessionId,
-            result.get("task") or task,
-            annotation.model_dump(),
-            status="submitted",
-            needs_review=True,
-            reviewed=False,
-        )
-        if request.sessionId:
-            upsert_review_task(
-                str(request.task["id"]),
-                request.sessionId,
-                result.get("task") or task,
-                "not_reviewed",
-                annotation.model_dump(),
-                annotation.captionFinal or "",
-                issues,
-                submit_result=result,
-                reviewed=False,
-            )
-        return {"status": "submitted", "result": result}
-    except Exception as exc:
-        raise HTTPException(status_code=409, detail=error_detail(exc)) from exc
-
-
 @app.get("/api/local/tasks")
-async def local_tasks() -> dict[str, object]:
-    return {"tasks": list_tasks()}
-
-
-@app.get("/api/local/images/{filename}")
-async def local_image(filename: str) -> FileResponse:
-    path = cached_image_path(filename)
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=404, detail="Cached image not found.")
-    return FileResponse(path)
+async def local_tasks(
+    status: str = "all",
+    case_type: str | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict[str, object]:
+    return {"tasks": list_local_tasks(status=status, case_type=case_type, limit=limit)}

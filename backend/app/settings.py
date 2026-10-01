@@ -11,19 +11,19 @@ DB_FILE = STATE_DIR / "autotag.sqlite3"
 
 
 class Settings(BaseSettings):
-    uit_email: str = Field(default="", alias="UIT_EMAIL")
-    uit_password: str = Field(default="", alias="UIT_PASSWORD")
+    rcr_base_url: str = Field(default="http://54.179.122.133:8090", alias="RCR_BASE_URL")
+    rcr_username: str = Field(default="", alias="RCR_USERNAME")
+    rcr_password: str = Field(default="", alias="RCR_PASSWORD")
     openai_compat_base_url: str = Field(
         default="https://api.openai.com/v1", alias="OPENAI_COMPAT_BASE_URL"
     )
     openai_compat_api_key: str = Field(default="", alias="OPENAI_COMPAT_API_KEY")
-    openai_compat_model: str = Field(default="gpt-4o-mini", alias="OPENAI_COMPAT_MODEL")
+    openai_compat_model: str = Field(default="ag/gemini-3.8-flash-high", alias="OPENAI_COMPAT_MODEL")
     openai_compat_review_model: str = Field(
         default="ag/gemini-pro-agent", alias="OPENAI_COMPAT_REVIEW_MODEL"
     )
     auto_submit_enabled: bool = Field(default=False, alias="AUTO_SUBMIT_ENABLED")
     ai_double_check_enabled: bool = Field(default=True, alias="AI_DOUBLE_CHECK_ENABLED")
-    remote_review_queue_url: str = Field(default="", alias="REMOTE_REVIEW_QUEUE_URL")
 
     model_config = SettingsConfigDict(env_file=ROOT_DIR / ".env", extra="ignore")
 

@@ -1,822 +1,258 @@
-import asyncio
-import base64
-import io
 import json
-import mimetypes
-from json import JSONDecodeError
+from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import unquote
 
-import httpx
-from PIL import Image, ImageDraw, ImageFilter
-
-from .caption import build_caption
-from .image_cache import cached_image_path
-from .models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
-from .text_cleanup import cleanup_desc_change_text, remove_comma_before_connectors
-from .uit_client import uit_client
-
-
-TRANSIENT_MODEL_STATUSES = {429, 502, 503, 504}
-MODEL_RETRY_ATTEMPTS = 4
-MODEL_EMPTY_OUTPUT_RETRY_ATTEMPTS = 3
-MODEL_RETRY_BASE_DELAY_SECONDS = 2.0
+from .caption import build_instruction, expected_case_type, is_two_subject
+from .images import identity_subjects, load_image_bytes, render_for_model
+from .llm_client import chat_payload, extract_json, is_no_text_output_error, request_completion
+from .models import RcrAnnotation, RuntimeSettings, SubjectAssignment
+from .text_cleanup import cleanup_select_text, cleanup_target_condition
 
 
 SYSTEM_PROMPT = """
-You are annotating CPR image-pair tasks.
-Return only a valid JSON object that matches the Stage 2 annotation schema. Do not add markdown, commentary, or extra keys.
+You are annotating RCR (Referential Composition Retrieval) image-pair tasks.
+Return only a valid JSON object. Do not add markdown, commentary, or extra keys.
 
-Use only visible evidence from the images. Do not infer emotions, jobs, family relations, intent, or any hidden facts.
-Use the query image to identify the subject(s). Use the target image to describe what those subject(s) should be like in the target.
+You get a QUERY image and a TARGET image. Colored boxes mark the people involved:
+- boxes labeled S1 (orange) are Subject 1, boxes labeled S2 (blue) are Subject 2, boxes labeled "other" are not part of the task.
+- The same person (identity) is boxed in both images, so S1 in the query image is the same S1 in the target image.
+The subject assignment and the case type are already decided. Never change them.
 
-Choose exactly one caseType based on the target image:
-- SINGLE: one subject with one target description.
-- MULTI: two different subjects, each with its own description and change.
-- RELATIONAL: two different subjects, where the main signal is the ordered relation between them.
+You write these fields:
+- select_texts: one text per subject. It identifies the subject in the QUERY image, so someone reading it can find the right person or group among other people.
+- target_condition: ONE sentence that says what is true about the subject(s) in the TARGET image.
 
-Follow these field rules:
-- DESC fields identify who the subject is in the query image, specific enough to distinguish the correct person or group.
-- CHANGE fields describe what that subject is doing or what visible attribute/state they have in the target image.
-- PAIR_CHANGE describes the relation from Subject 1 to Subject 2, and the order must be correct.
-- Never mention the literal label "Subject", "Subject 1", or "Subject 2" inside DESC or CHANGE field values. Write only the visual description fragment, such as "the woman in a yellow shirt" or "is sitting on a bench".
-- For RELATIONAL, individual subject change fields are optional and should be filled only when they are clearly visible.
-- Subject 1 and Subject 2 must be different. A subject may be a group if the query image shows them as a group.
-- Select queryGroupIds from the query image only. Include targetGroupIds only when they clearly match the same subject(s) in the target image.
-- Do not use IDs, technical terms, or overly generic labels like "the person" when the image allows a more specific description.
-- Write concise, natural English fragments, not full sentences inside DESC/CHANGE/PAIR_CHANGE.
-- If multiple people are best treated as one unit, use SINGLE.
-- When Subject 1 is a group, write CHANGE with plural grammar and name the group naturally, such as "the two people are wearing white shirts and sitting in the stands".
-- If a field is not supported by visible evidence, leave it empty rather than guessing.
-- When choosing DESC details, prioritize visible uniqueness in this order: clothing -> accessories -> hair -> environment.
-- If clothing evidence is sparse or absent, strengthen the description with accessories, then hair, then environment/background only as needed to disambiguate.
-- Prefer the most distinctive visible attributes available, so the subject can still be uniquely identified even when earlier levels in the hierarchy are weak.
-- Each DESC should include at least 3 visible distinguishing details whenever the image provides them.
-- Do not stop at a short phrase like "the man wearing a gray shirt"; expand it with more visible details, such as "the man wearing a gray shirt with white text, standing near the monument".
-- Count separate visible cues such as clothing color/type, text or pattern on clothing, accessories, hairstyle, pose, relative position, nearby object, and immediate background/environment.
-- Use simple English vocabulary, ideally below B1 level. Prefer plain, common words over advanced or academic wording.
-- All DESC, CHANGE, and PAIR_CHANGE text must be English. Translate any non-English user wording into simple English before using it.
-- Keep phrasing natural and clear, but avoid rare adjectives or complex sentence structures when a simpler phrase says the same thing.
-- Avoid overusing commas. Prefer natural connector words where possible.
-- Use commas only when they make the grammar clearer, such as separating a list of action fragments: "is wearing blue jeans, not wearing a hat, and placing his hands behind his back".
-- Do not stack fragments without connectors, such as "is wearing blue jeans not wearing a hat hands placed behind back".
-- Separate adjacent clothing, accessory, action, and pose fragments with connectors or clear commas. Do not write fragments like "a red jacket grey helmet", "wearing glasses a white shirt", or "is wearing red pants a pink backpack".
-- Do not leave dangling or unfinished fragments such as "holding a", "with a", or "standing near". If the object or context is unclear, omit that unfinished part.
-- Avoid a comma before simple connector words when the sentence already reads clearly without it.
-- For extra context about another visible person or object, use a connected phrase such as "with a man between them holding a yellow drink" instead of attaching a loose clause.
-- When the subject is a group, use plural grammar in CHANGE and refer to the group naturally, such as "the two people are wearing white shirts".
-- For left/right hands or looking direction, use the subject's own left/right, not the viewer's left/right. If uncertain, use neutral wording such as "one hand" or "looking to one side".
-- If the target context helps distinguish the correct image, name the concrete visible object or place, such as "standing in front of a memorial wall", instead of using only a vague setting.
-- If the key target signal is a spatial or interaction relation between two subjects, choose RELATIONAL instead of MULTI.
-- Read the final caption pattern before responding. It must sound grammatical after "Subject 1" or "Subject 2" is inserted.
-- Vary the wording a little when the images allow it, so similar tasks do not always produce the exact same phrasing.
-- Prefer human-like, direct descriptions grounded in the image over rigid template-heavy wording, while still keeping the final caption valid and easy to read.
+The final instruction is built like this, so your text must read naturally inside it:
+  Identify Subject 1 as <select_texts[0]> [and Subject 2 as <select_texts[1]>]; then retrieve target images where <target_condition>.
 
-The final caption built from your fields should follow these patterns:
-- SINGLE: In the query image, Subject 1 refers to [DESC]. Retrieve target images where Subject 1 [CHANGE].
-- MULTI: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [CHANGE 1] and Subject 2 [CHANGE 2].
-- RELATIONAL: In the query image, Subject 1 refers to [DESC 1], and Subject 2 refers to [DESC 2]. Retrieve target images where Subject 1 [PAIR_CHANGE] Subject 2.
+Case rules:
+- INDIVIDUAL: one person. select_texts has 1 text. target_condition describes Subject 1, for example "Subject 1 is holding a diploma".
+- GROUP: Subject 1 is a group of several people. select_texts has 1 text that identifies the whole group, for example "the group consisting of the man in black and the woman in white". target_condition uses plural grammar and names Subject 1, for example "the members of Subject 1 are standing together on the stage".
+- DUAL: two subjects with independent changes. select_texts has 2 texts. target_condition states the change of both in one sentence, for example "Subject 1 is holding a diploma and Subject 2 is clapping".
+- RELATIONAL: two subjects with a directed relation. select_texts has 2 texts. target_condition states who does what to whom, in the right order, for example "Subject 1 is presenting a diploma to Subject 2". The direction must match the assignment of Subject 1 and Subject 2.
 
-Before responding, verify that the JSON is valid, the case is consistent with the target image, and the text is short, natural, and grounded in visible evidence.
-"""
+Hard rules:
+- select_texts never contain the words "Subject", "Subject 1" or "Subject 2". They are plain descriptions such as "the man in a dark suit standing on the left".
+- target_condition MUST contain the literal text "Subject 1" (and "Subject 2" for DUAL and RELATIONAL). It must not start with "then retrieve target images where".
+- Use only visible evidence. Do not guess emotions, jobs, relationships, names, or intent. If a detail is not clearly visible, leave it out.
+- All text must be English. Translate any user notes written in another language into simple English.
+- Use simple English, below B1 level. Plain, common words. Short natural phrases, not long sentences.
+- select_texts: describe the subject in the QUERY image. Prefer in this order: clothing, accessories, hair, pose and position, nearby objects, background. Use at least 3 distinguishing details when the image allows it. Avoid vague words like "the person" when a specific description is possible.
+- target_condition: describe the visible action, pose, clothing, or position of the subject(s) in the TARGET image. Name the concrete place or object when it helps, for example "standing in front of a memorial wall".
+- Do not stack fragments without connectors, such as "is wearing blue jeans not wearing a hat". Use "and" or "with". Avoid commas before "and" or "or".
+- Do not leave unfinished fragments such as "holding a", "with a", or "standing near".
+- For left/right of the body or looking direction, use the subject's own left/right. If unsure, use neutral words such as "one hand".
+- Vary the wording a little when the images allow it, so different tasks do not all sound the same.
 
+If a box does not match the person it should mark (for example the box in one image clearly shows a different person), still write your best text and put a short reason in "subject_problem". Otherwise "subject_problem" must be null.
 
-REVIEW_PROMPT = """
-You are a strict reviewer for CPR image-pair annotations.
-Review the proposed annotation against the images, boxes, and rules. Do not rewrite everything.
-
-Return only a valid JSON object with this shape:
-{
-  "approved": true | false,
-  "issues": ["short concrete issue"],
-  "patch": {
-    "caseType": "SINGLE | MULTI | RELATIONAL",
-    "relationalSubject1ChangeEnabled": true | false,
-    "relationalSubject2ChangeEnabled": true | false,
-    "pairChangeRaw": "string|null",
-    "pairChangeFinal": "string|null",
-    "subjects": [
-      {
-        "subjectId": 1,
-        "queryGroupIds": ["id"],
-        "targetGroupIds": ["id"],
-        "descQueryRaw": "English fragment",
-        "descQueryFinal": "English fragment",
-        "changeTargetRaw": "English fragment",
-        "changeTargetFinal": "English fragment"
-      }
-    ]
-  }
-}
-
-Use an empty patch object when the annotation is already good.
-Patch only fields that are clearly wrong or incomplete. Keep good fields unchanged.
-Never mention the literal label "Subject", "Subject 1", or "Subject 2" inside DESC or CHANGE field values.
-Do not add unsupported details. Prefer leaving a field unchanged over guessing.
-"""
-
-
-DEIDENTIFIED_FALLBACK_PROMPT = """
-Create a CPR annotation JSON for the two de-identified images.
-The colored boxes and labels mark the task subjects. Faces may be blurred, so use visible clothing, pose, accessories, and background instead of identity.
-
-Return only a valid JSON object that matches this schema:
-{
-  "caseType": "SINGLE | MULTI | RELATIONAL",
-  "relationalSubject1ChangeEnabled": false,
-  "relationalSubject2ChangeEnabled": false,
-  "pairChangeRaw": "string|null",
-  "pairChangeFinal": "string|null",
-  "subjects": [
-    {
-      "subjectId": 1,
-      "queryGroupIds": ["query group id"],
-      "targetGroupIds": ["target group id"],
-      "descQueryRaw": "English fragment",
-      "descQueryFinal": "English fragment",
-      "changeTargetRaw": "English verb phrase",
-      "changeTargetFinal": "English verb phrase"
-    }
-  ]
-}
-
-Use SINGLE for one boxed subject, MULTI for two separate subjects, and RELATIONAL when the target relation between two subjects is the main signal.
-DESC fields describe the subject in the query image.
-CHANGE fields must read naturally after "Subject 1" or "Subject 2", such as "is wearing a black shirt"; do not start with "he", "she", "they", or a person name.
-Keep text concise, simple, and grounded only in visible evidence.
+Return exactly:
+{"select_texts": ["..."], "target_condition": "...", "subject_problem": null}
 """.strip()
 
 
-def image_by_side(task: dict[str, Any], side: str) -> dict[str, Any] | None:
-    wanted = {"QUERY", "A"} if side == "QUERY" else {"TARGET", "B"}
-    for image in task.get("images", []):
-        if str(image.get("side", "")).upper() in wanted:
-            return image
-    return None
+REVIEW_PROMPT = """
+You are a strict reviewer for RCR annotations. You get the same images and rules, plus a proposed annotation.
+Check it against the images. Do not rewrite everything.
+
+Check these points:
+1. Each select_text matches the subject boxed S1/S2 in the QUERY image and is specific enough to find that person or group.
+2. target_condition is true for the TARGET image: the right action, pose, clothing, place, and for RELATIONAL the right direction (Subject 1 does it to Subject 2).
+3. No hidden facts (emotions, jobs, relationships, names), no unfinished fragments, no wrong grammar after "Subject 1" or "Subject 2".
+4. select_texts do not contain the word "Subject"; target_condition mentions Subject 1 (and Subject 2 for DUAL and RELATIONAL).
+5. Simple English, no stacked fragments, no needless commas.
+
+Return only this JSON:
+{"approved": true, "issues": ["short concrete issue"], "patch": {"select_texts": ["..."], "target_condition": "..."}}
+
+Use an empty patch {} when the annotation is already good. Patch only fields that are clearly wrong; when you patch select_texts, return all of them. Prefer leaving a field unchanged over guessing.
+""".strip()
 
 
-def box_summary(image: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not image:
-        return []
-    summary: list[dict[str, Any]] = []
-    for box in image.get("boxes", []):
-        summary.append(
-            {
-                "id": box.get("id"),
-                "groupUid": box.get("groupUid"),
-                "label": box.get("label") or box.get("rawLabel"),
-                "x": box.get("x"),
-                "y": box.get("y"),
-                "width": box.get("width"),
-                "height": box.get("height"),
-            }
-        )
-    return summary
+@dataclass
+class Generation:
+    annotation: RcrAnnotation
+    concerns: list[str] = field(default_factory=list)
 
 
-async def task_image_as_data_url(
-    image_url: str,
-    boxes: list[dict[str, Any]] | None = None,
-) -> str:
-    if image_url.startswith("/api/local/images/"):
-        filename = unquote(image_url.rsplit("/", 1)[-1])
-        path = cached_image_path(filename)
-        image_bytes = path.read_bytes()
-        content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-        if content_type.startswith("image/"):
-            image_bytes = uit_client._prepare_image(image_bytes, 512, 60, boxes)
-            content_type = "image/jpeg"
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
-    return await uit_client.image_as_data_url(image_url, boxes=boxes)
+def initial_annotation(task: dict[str, Any]) -> RcrAnnotation:
+    """Case type and subject assignment come from the task; the AI only writes text."""
+    initial = [
+        {"subject_id": int(item["subject_id"]), "identity_ids": [str(i) for i in item.get("identity_ids", [])]}
+        for item in task.get("initial_subjects") or []
+    ]
+    candidates = [str(i) for i in task.get("candidate_identity_ids") or []]
+    case_type = str(task["case_type"])
+    two = case_type in {"DUAL", "RELATIONAL"}
+    if not initial:
+        if two:
+            raise ValueError(f"{case_type} task has no initial subject assignment.")
+        initial = [{"subject_id": 1, "identity_ids": candidates}]
+    subjects = sorted(initial, key=lambda item: item["subject_id"])[: 2 if two else 1]
+    case_type = expected_case_type(subjects, case_type)
+    return RcrAnnotation(
+        case_type=case_type,
+        subjects=[SubjectAssignment(**item) for item in subjects],
+        select_texts=["" for _ in subjects],
+        target_condition="",
+    )
+
+
+def boxes_for(task: dict[str, Any], side: str) -> list[dict[str, Any]]:
+    return list(task[side].get("boxes") or [])
+
+
+def subject_summary(annotation: RcrAnnotation) -> list[dict[str, Any]]:
+    return [item.model_dump() for item in sorted(annotation.subjects, key=lambda item: item.subject_id)]
 
 
 async def append_task_images(
     content: list[dict[str, Any]],
-    query: dict[str, Any] | None,
-    target: dict[str, Any] | None,
+    task: dict[str, Any],
+    annotation: RcrAnnotation,
+    *,
+    blur_heads: bool = False,
 ) -> None:
-    for label, image in (("Query image", query), ("Target image", target)):
-        if image and image.get("imageUrl"):
-            image_url = str(image["imageUrl"])
-            content.append({"type": "text", "text": label})
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": await task_image_as_data_url(image_url)},
-                }
-            )
-            content.append({"type": "text", "text": f"{label} with bounding boxes"})
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": await task_image_as_data_url(
-                            image_url,
-                            boxes=box_summary(image),
-                        )
-                    },
-                }
-            )
+    assignment = identity_subjects(subject_summary(annotation))
+    for side in ("query", "target"):
+        original = await load_image_bytes(str(task["sample_id"]), side)
+        boxes = boxes_for(task, side)
+        title = side.upper()
+        if not blur_heads:
+            content.append({"type": "text", "text": f"{title} image (no boxes)"})
+            content.append({"type": "image_url", "image_url": {"url": render_for_model(original)}})
+        suffix = "faces blurred, " if blur_heads else ""
+        content.append({"type": "text", "text": f"{title} image ({suffix}boxes labeled S1 / S2 / other)"})
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": render_for_model(original, boxes, assignment, blur_heads=blur_heads)},
+            }
+        )
+
+
+def task_brief(task: dict[str, Any], annotation: RcrAnnotation, notes: str) -> str:
+    return json.dumps(
+        {
+            "case_type": annotation.case_type,
+            "subjects": subject_summary(annotation),
+            "select_texts_needed": 2 if is_two_subject(annotation.case_type) else 1,
+            "query_boxes": boxes_for(task, "query"),
+            "target_boxes": boxes_for(task, "target"),
+            "user_notes": notes,
+        },
+        ensure_ascii=True,
+    )
+
+
+def completion_url(settings: RuntimeSettings) -> str:
+    return settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
+
+
+def apply_generated_text(annotation: RcrAnnotation, data: dict[str, Any]) -> tuple[RcrAnnotation, list[str]]:
+    expected = len(annotation.subjects)
+    raw_texts = data.get("select_texts")
+    if isinstance(raw_texts, str):
+        raw_texts = [raw_texts]
+    texts = [cleanup_select_text(item) for item in (raw_texts or [])][:expected]
+    texts += [""] * (expected - len(texts))
+    result = annotation.model_copy(
+        update={
+            "select_texts": texts,
+            "target_condition": cleanup_target_condition(data.get("target_condition")),
+        }
+    )
+    concerns: list[str] = []
+    problem = data.get("subject_problem")
+    if isinstance(problem, str) and problem.strip():
+        concerns.append(f"Model flagged the subject boxes: {problem.strip()}")
+    return result, concerns
 
 
 async def generate_annotation(
     task: dict[str, Any], settings: RuntimeSettings, notes: str = ""
-) -> Stage2Annotation:
+) -> Generation:
     if not settings.openai_compat_api_key:
         raise ValueError("OpenAI-compatible API key is missing.")
-    query = image_by_side(task, "QUERY")
-    target = image_by_side(task, "TARGET")
-    content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": json.dumps(
-                {
-                    "instruction": "Create the best annotation for this CPR pair.",
-                    "queryBoxes": box_summary(query),
-                    "targetBoxes": box_summary(target),
-                    "userNotes": notes,
-                    "schema": {
-                        "schemaVersion": "1.0",
-                        "caseType": "SINGLE | MULTI | RELATIONAL",
-                        "relationalSubject1ChangeEnabled": "boolean",
-                        "relationalSubject2ChangeEnabled": "boolean",
-                        "pairChangeRaw": "string|null",
-                        "pairChangeFinal": "string|null",
-                        "subjects": [
-                            {
-                                "subjectId": 1,
-                                "targetConstraintEnabled": True,
-                                "queryGroupIds": ["query group id"],
-                                "targetGroupIds": ["target group id"],
-                                "descQueryRaw": "English fragment",
-                                "descQueryFinal": "English fragment",
-                                "changeTargetRaw": "English fragment",
-                                "changeTargetFinal": "English fragment",
-                            }
-                        ],
-                    },
-                },
-                ensure_ascii=True,
-            ),
-        }
-    ]
-    await append_task_images(content, query, target)
+    base = initial_annotation(task)
+    url = completion_url(settings)
 
-    payload = chat_payload(
-        settings.openai_compat_model,
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.strip()},
-            {"role": "user", "content": content},
-        ],
-        json_object=True,
-    )
-    url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
+    async def ask(blur_heads: bool) -> str:
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": task_brief(task, base, notes)},
+        ]
+        await append_task_images(content, task, base, blur_heads=blur_heads)
+        payload = chat_payload(
+            settings.openai_compat_model,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ],
+            json_object=True,
+        )
+        return await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
+
     try:
-        raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
+        raw = await ask(blur_heads=False)
     except ValueError as exc:
         if not is_no_text_output_error(exc):
             raise
-        fallback_payload = await deidentified_generation_payload(
-            settings.openai_compat_model,
-            task,
-            query,
-            target,
-            notes,
-        )
-        raw = await request_completion(url, settings.openai_compat_api_key, fallback_payload, 120.0)
-    data = extract_json(raw)
-    annotation = cleanup_stage2_annotation(coerce_annotation(data))
-    annotation.captionFinal = build_caption(annotation)
+        raw = await ask(blur_heads=True)
+    annotation, concerns = apply_generated_text(base, extract_json(raw))
     if settings.ai_double_check_enabled:
         try:
-            annotation = await review_annotation(task, annotation, settings, notes)
+            annotation, review_issues = await review_annotation(task, annotation, settings, notes)
+            concerns.extend(review_issues)
         except ValueError as exc:
             if not is_no_text_output_error(exc):
                 raise
-            annotation.llmEdits.append(
-                {
-                    "type": "double_check",
-                    "approved": False,
-                    "issues": ["Double-check skipped because the model returned no text output."],
-                }
-            )
-    return annotation
-
-
-async def deidentified_generation_payload(
-    model: str,
-    task: dict[str, Any],
-    query: dict[str, Any] | None,
-    target: dict[str, Any] | None,
-    notes: str = "",
-) -> dict[str, Any]:
-    content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": json.dumps(
-                {
-                    "instruction": DEIDENTIFIED_FALLBACK_PROMPT,
-                    "queryBoxes": box_summary(query),
-                    "targetBoxes": box_summary(target),
-                    "userNotes": notes,
-                },
-                ensure_ascii=True,
-            ),
-        }
-    ]
-    await append_deidentified_task_images(content, query, target)
-    return chat_payload(
-        model,
-        temperature=0.1,
-        messages=[{"role": "user", "content": content}],
-        json_object=True,
-    )
-
-
-async def append_deidentified_task_images(
-    content: list[dict[str, Any]],
-    query: dict[str, Any] | None,
-    target: dict[str, Any] | None,
-) -> None:
-    for label, image in (("Query image", query), ("Target image", target)):
-        if image and image.get("imageUrl"):
-            image_url = str(image["imageUrl"])
-            content.append({"type": "text", "text": f"{label} with de-identified boxed subjects"})
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": await deidentified_task_image_as_data_url(
-                            image_url,
-                            box_summary(image),
-                        ),
-                    },
-                }
-            )
-
-
-async def deidentified_task_image_as_data_url(
-    image_url: str,
-    boxes: list[dict[str, Any]],
-) -> str:
-    data_url = await task_image_as_data_url(image_url)
-    if "," not in data_url:
-        return data_url
-    try:
-        image_bytes = base64.b64decode(data_url.split(",", 1)[1])
-    except ValueError:
-        return data_url
-
-    with Image.open(io.BytesIO(image_bytes)) as image:
-        image = image.convert("RGB")
-        draw = ImageDraw.Draw(image)
-        for index, box in enumerate(boxes):
-            coords = uit_client._box_coords(box, image.width, image.height)
-            if not coords:
-                continue
-            left, top, right, bottom = coords
-            height = bottom - top
-            if height <= 0:
-                continue
-            blur_bottom = bottom if height <= image.height * 0.45 else top + max(1, round(height * 0.35))
-            region = image.crop((left, top, right, blur_bottom)).filter(ImageFilter.GaussianBlur(radius=12))
-            image.paste(region, (left, top))
-            color = "#14b8a6" if index % 2 == 0 else "#f59e0b"
-            for offset in range(3):
-                draw.rectangle((left - offset, top - offset, right + offset, bottom + offset), outline=color)
-            label = str(box.get("groupUid") or box.get("label") or box.get("id") or index + 1)
-            draw.text((left + 4, max(0, top + 4)), label, fill="#000000")
-        output = io.BytesIO()
-        image.save(output, format="JPEG", quality=60, optimize=True)
-    return f"data:image/jpeg;base64,{base64.b64encode(output.getvalue()).decode('ascii')}"
+            concerns.append("Double-check skipped because the model returned no text output.")
+    return Generation(annotation=annotation, concerns=concerns)
 
 
 async def review_annotation(
     task: dict[str, Any],
-    annotation: Stage2Annotation,
+    annotation: RcrAnnotation,
     settings: RuntimeSettings,
     notes: str = "",
-) -> Stage2Annotation:
-    query = image_by_side(task, "QUERY")
-    target = image_by_side(task, "TARGET")
-    proposed = cleanup_stage2_annotation(annotation)
-    proposed.captionFinal = build_caption(proposed)
-    content: list[dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": json.dumps(
-                {
-                    "instruction": "Review this proposed CPR annotation and return a minimal JSON patch.",
-                    "queryBoxes": box_summary(query),
-                    "targetBoxes": box_summary(target),
-                    "userNotes": notes,
-                    "proposedAnnotation": proposed.model_dump(),
-                    "proposedCaption": proposed.captionFinal,
-                },
-                ensure_ascii=True,
-            ),
-        }
-    ]
-    await append_task_images(content, query, target)
+) -> tuple[RcrAnnotation, list[str]]:
+    brief = json.loads(task_brief(task, annotation, notes))
+    brief["proposed_annotation"] = {
+        "select_texts": annotation.select_texts,
+        "target_condition": annotation.target_condition,
+    }
+    brief["proposed_instruction"] = build_instruction(annotation)
+    content: list[dict[str, Any]] = [{"type": "text", "text": json.dumps(brief, ensure_ascii=True)}]
+    await append_task_images(content, task, annotation)
     payload = chat_payload(
         settings.openai_compat_review_model,
         temperature=0.0,
         messages=[
-            {"role": "system", "content": f"{SYSTEM_PROMPT.strip()}\n\n{REVIEW_PROMPT.strip()}"},
+            {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{REVIEW_PROMPT}"},
             {"role": "user", "content": content},
         ],
         json_object=True,
     )
-    url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
-    raw = await request_completion(url, settings.openai_compat_api_key, payload, 120.0)
-    review = extract_json(raw)
-    checked = apply_review_patch(proposed, review)
-    checked.captionFinal = build_caption(checked)
-    return checked
+    raw = await request_completion(completion_url(settings), settings.openai_compat_api_key, payload, 120.0)
+    return apply_review_patch(annotation, extract_json(raw))
 
 
-def apply_review_patch(annotation: Stage2Annotation, review: dict[str, Any]) -> Stage2Annotation:
+def apply_review_patch(annotation: RcrAnnotation, review: dict[str, Any]) -> tuple[RcrAnnotation, list[str]]:
     patch = review.get("patch")
-    if not isinstance(patch, dict):
-        patch = {}
-    if not patch:
-        cleaned = cleanup_stage2_annotation(annotation)
-        cleaned.captionFinal = build_caption(cleaned)
-        add_review_edit(cleaned, review)
-        return cleaned
-
-    merged = annotation.model_dump()
-    for key in (
-        "caseType",
-        "relationalSubject1ChangeEnabled",
-        "relationalSubject2ChangeEnabled",
-        "pairChangeRaw",
-        "pairChangeFinal",
-    ):
-        if key in patch:
-            merged[key] = patch[key]
-
-    subject_patches = patch.get("subjects")
-    if isinstance(subject_patches, list):
-        subjects_by_id: dict[int, dict[str, Any]] = {}
-        for subject in merged.get("subjects", []):
-            if isinstance(subject, dict):
-                try:
-                    subjects_by_id[int(subject.get("subjectId", len(subjects_by_id) + 1))] = dict(subject)
-                except (TypeError, ValueError):
-                    continue
-        for subject_patch in subject_patches:
-            if not isinstance(subject_patch, dict):
-                continue
-            try:
-                subject_id = int(subject_patch.get("subjectId", 1))
-            except (TypeError, ValueError):
-                subject_id = 1
-            current = subjects_by_id.get(subject_id, {"subjectId": subject_id, "targetConstraintEnabled": True})
-            for key in (
-                "queryGroupIds",
-                "targetGroupIds",
-                "descQueryRaw",
-                "descQueryFinal",
-                "changeTargetRaw",
-                "changeTargetFinal",
-            ):
-                if key in subject_patch:
-                    current[key] = subject_patch[key]
-            subjects_by_id[subject_id] = current
-        merged["subjects"] = [subjects_by_id[key] for key in sorted(subjects_by_id)]
-
-    checked = cleanup_stage2_annotation(coerce_annotation(merged))
-    checked.llmEdits = list(annotation.llmEdits)
-    add_review_edit(checked, review)
-    checked.captionFinal = build_caption(checked)
-    return checked
-
-
-def add_review_edit(annotation: Stage2Annotation, review: dict[str, Any]) -> None:
-    issues = review.get("issues")
-    if not isinstance(issues, list):
-        issues = []
-    annotation.llmEdits.append(
-        {
-            "type": "double_check",
-            "approved": bool(review.get("approved", not issues)),
-            "issues": [str(issue) for issue in issues],
-        }
-    )
-
-
-async def fix_annotation_text(text: str, field: str, settings: RuntimeSettings) -> str:
-    if not settings.openai_compat_api_key:
-        raise ValueError("OpenAI-compatible API key is missing.")
-    source = text.strip()
-    if not source:
-        return ""
-    field_name = field.strip() or "annotation"
-    prompt = f"""
-Rewrite the user's intent as one concise natural English fragment for CPR annotation field: {field_name}.
-
-Rules:
-- Translate to English if needed.
-- Keep only the meaning the user provided. Do not add new visible details.
-- Follow the CPR annotation system rules: simple B1-level English, natural, concise, image-grounded wording.
-- Avoid overusing commas. Prefer natural connector words where possible, and do not put a comma before connector words.
-- Return a fragment, not a full sentence.
-- Do not add markdown, quotes, labels, JSON, or commentary.
-- Do not mention the literal label "Subject", "Subject 1", or "Subject 2" in DESC or CHANGE output.
-- For DESC, describe who the subject is in the query image.
-- For CHANGE, describe the visible target action, attribute, state, or condition.
-- For PAIR_CHANGE, describe the ordered relation from Subject 1 to Subject 2.
-
-User text:
-{source}
-""".strip()
-    payload = chat_payload(
-        settings.openai_compat_model,
-        temperature=0.1,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT.strip()},
-            {"role": "user", "content": prompt},
-        ],
-    )
-    url = settings.openai_compat_base_url.rstrip("/") + "/chat/completions"
-    fixed = (await request_completion(url, settings.openai_compat_api_key, payload, 60.0)).strip()
-    if fixed.startswith("```"):
-        fixed = fixed.strip("`").strip()
-    fixed = fixed.strip().strip('"').strip("'").strip()
-    if "PAIR" in field_name.upper():
-        return remove_comma_before_connectors(fixed)
-    return cleanup_desc_change_text(fixed)
-
-
-def chat_payload(
-    model: str,
-    *,
-    temperature: float,
-    messages: list[dict[str, Any]],
-    json_object: bool = False,
-) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "model": model,
-        "temperature": temperature,
-        "messages": messages,
-        "stream": False,
-        "max_tokens": 4096 if json_object else 512,
-    }
-    if "gemini" in model.lower():
-        payload["max_completion_tokens"] = payload["max_tokens"]
-    if json_object and "gemini" not in model.lower():
-        payload["response_format"] = {"type": "json_object"}
-    return payload
-
-
-async def request_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> str:
-    response = await post_completion(url, api_key, payload, timeout)
-    try:
-        content = completion_content(response)
-        if content.strip():
-            return content
-    except ValueError as exc:
-        if not is_no_text_output_error(exc):
-            raise
-        last_error = exc
-    else:
-        last_error = empty_completion_error(response)
-
-    retry_payload = retry_chat_payload(payload)
-    for attempt in range(1, MODEL_EMPTY_OUTPUT_RETRY_ATTEMPTS + 1):
-        if attempt > 1:
-            await asyncio.sleep(MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 2)))
-        retry_response = await post_completion(url, api_key, retry_payload, timeout)
-        try:
-            content = completion_content(retry_response)
-            if content.strip():
-                return content
-        except ValueError as exc:
-            if not is_no_text_output_error(exc):
-                raise
-            last_error = exc
-        else:
-            last_error = empty_completion_error(retry_response)
-    raise last_error
-
-
-def is_no_text_output_error(exc: ValueError) -> bool:
-    return "no text output" in str(exc)
-
-
-def empty_completion_error(response: httpx.Response) -> ValueError:
-    return ValueError(f"Model API returned no text output. Body: {response.text[:500]}")
-
-
-def retry_delay_seconds(response: httpx.Response, attempt: int) -> float:
-    retry_after = response.headers.get("retry-after")
-    if retry_after:
-        try:
-            return max(0.0, float(retry_after))
-        except ValueError:
-            pass
-    return MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-
-
-async def post_completion(url: str, api_key: str, payload: dict[str, Any], timeout: float) -> httpx.Response:
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        for attempt in range(1, MODEL_RETRY_ATTEMPTS + 1):
-            try:
-                response = await client.post(
-                    url,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json=payload,
-                )
-            except httpx.TransportError:
-                if attempt >= MODEL_RETRY_ATTEMPTS:
-                    raise
-                await asyncio.sleep(MODEL_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)))
-                continue
-            if (
-                response.status_code in TRANSIENT_MODEL_STATUSES
-                and attempt < MODEL_RETRY_ATTEMPTS
-            ):
-                await asyncio.sleep(retry_delay_seconds(response, attempt))
-                continue
-            response.raise_for_status()
-            return response
-    raise RuntimeError("Model request retry loop exited unexpectedly.")
-
-
-def retry_chat_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    retry_payload = {**payload}
-    max_tokens = int(retry_payload.get("max_tokens") or 4096)
-    retry_payload["max_tokens"] = max(max_tokens, 8192)
-    if "gemini" in str(retry_payload.get("model", "")).lower():
-        retry_payload["max_completion_tokens"] = retry_payload["max_tokens"]
-    messages = retry_payload.get("messages")
-    if isinstance(messages, list) and len(messages) >= 2 and messages[0].get("role") == "system":
-        system_text = str(messages[0].get("content") or "")
-        user_message = {**messages[1]}
-        user_content = user_message.get("content")
-        if isinstance(user_content, list):
-            user_message["content"] = [{"type": "text", "text": system_text}, *user_content]
-        elif isinstance(user_content, str):
-            user_message["content"] = f"{system_text}\n\n{user_content}"
-        retry_payload["messages"] = [user_message, *messages[2:]]
-    return retry_payload
-
-
-def completion_content(response: httpx.Response) -> str:
-    try:
-        response_data = response.json()
-    except JSONDecodeError:
-        return streamed_completion_content(response.text)
-    if not isinstance(response_data, dict):
-        raise ValueError(f"Model API returned unexpected JSON: {str(response_data)[:500]}")
-    if response_data.get("error"):
-        raise ValueError(f"Model API returned an error: {str(response_data['error'])[:500]}")
-
-    choices = response_data.get("choices")
-    if isinstance(choices, list) and choices:
-        return choice_content(choices[0])
-
-    choice = response_data.get("choice")
-    if isinstance(choice, dict):
-        return choice_content(choice)
-
-    for key in ("content", "text", "output_text", "response"):
-        value = response_data.get(key)
-        if isinstance(value, str):
-            return value
-        if isinstance(value, dict):
-            nested = nested_response_content(value)
-            if nested:
-                return nested
-            if key == "response":
-                usage = value.get("usageMetadata")
-                raise ValueError(
-                    "Model API returned no text output in response. "
-                    f"Usage metadata: {usage}. Body: {str(response_data)[:500]}"
-                )
-
-    raise ValueError(
-        "Model API response did not include choices/message content. "
-        f"Response keys: {', '.join(response_data.keys())}. Body: {str(response_data)[:500]}"
-    )
-
-
-def choice_content(choice: dict[str, Any]) -> str:
-    message = choice.get("message")
-    if isinstance(message, dict):
-        content = message.get("content")
-        if isinstance(content, list):
-            return "".join(str(item.get("text") or "") if isinstance(item, dict) else str(item) for item in content)
-        return str(content or "")
-    if isinstance(choice.get("delta"), dict):
-        return str(choice["delta"].get("content") or "")
-    if isinstance(choice.get("text"), str):
-        return str(choice["text"])
-    if isinstance(choice.get("content"), str):
-        return str(choice["content"])
-    raise ValueError(f"Model API choice did not include message content: {str(choice)[:500]}")
-
-
-def nested_response_content(response_data: dict[str, Any]) -> str:
-    candidates = response_data.get("candidates")
-    if isinstance(candidates, list) and candidates:
-        candidate = candidates[0]
-        if isinstance(candidate, dict):
-            content = candidate.get("content")
-            if isinstance(content, dict):
-                parts = content.get("parts")
-                if isinstance(parts, list):
-                    return "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict))
-                if isinstance(content.get("text"), str):
-                    return str(content["text"])
-            if isinstance(candidate.get("text"), str):
-                return str(candidate["text"])
-    for key in ("text", "outputText", "output_text"):
-        value = response_data.get(key)
-        if isinstance(value, str):
-            return value
-    return ""
-
-
-def streamed_completion_content(text: str) -> str:
-    chunks: list[str] = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        data = line.removeprefix("data:").strip()
-        if not data or data == "[DONE]":
-            continue
-        try:
-            event = json.loads(data)
-        except JSONDecodeError as exc:
-            raise ValueError(f"Model API returned invalid JSON event: {data[:500]}") from exc
-        for choice in event.get("choices", []):
-            delta = choice.get("delta") or {}
-            chunks.append(str(delta.get("content") or ""))
-    if not chunks:
-        raise ValueError(f"Model API returned invalid JSON: {text[:500]}")
-    return "".join(chunks)
-
-
-def extract_json(raw: str) -> dict[str, Any]:
-    text = raw.strip()
-    if not text:
-        raise ValueError("Model returned an empty response body.")
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end >= start:
-        text = text[start : end + 1]
-    if not text:
-        raise ValueError("Model response did not contain JSON content.")
-    return json.loads(text)
-
-
-def coerce_annotation(data: dict[str, Any]) -> Stage2Annotation:
-    subjects = data.get("subjects") or []
-    normalized_subjects = []
-    for index, item in enumerate(subjects):
-        subject_id = 2 if int(item.get("subjectId", index + 1)) == 2 else 1
-        normalized_subjects.append(
-            SubjectAnnotation(
-                subjectId=subject_id,
-                targetConstraintEnabled=True,
-                queryGroupIds=[str(value) for value in item.get("queryGroupIds", []) if str(value).strip()],
-                targetGroupIds=[str(value) for value in item.get("targetGroupIds", []) if str(value).strip()],
-                descQueryRaw=str(item.get("descQueryRaw") or item.get("descQueryFinal") or ""),
-                descQueryFinal=str(item.get("descQueryFinal") or item.get("descQueryRaw") or ""),
-                changeTargetRaw=str(item.get("changeTargetRaw") or item.get("changeTargetFinal") or ""),
-                changeTargetFinal=str(item.get("changeTargetFinal") or item.get("changeTargetRaw") or ""),
-            )
-        )
-    case_type = str(data.get("caseType") or "SINGLE").upper()
-    if case_type not in {"SINGLE", "MULTI", "RELATIONAL"}:
-        case_type = "SINGLE"
-    expected = 1 if case_type == "SINGLE" else 2
-    normalized_subjects = sorted(normalized_subjects, key=lambda item: item.subjectId)[:expected]
-    return Stage2Annotation(
-        caseType=case_type,
-        relationalSubject1ChangeEnabled=bool(data.get("relationalSubject1ChangeEnabled", False)),
-        relationalSubject2ChangeEnabled=bool(data.get("relationalSubject2ChangeEnabled", False)),
-        pairChangeRaw=data.get("pairChangeRaw"),
-        pairChangeFinal=data.get("pairChangeFinal") or data.get("pairChangeRaw"),
-        subjects=normalized_subjects,
-    )
-
-
-def cleanup_stage2_annotation(annotation: Stage2Annotation) -> Stage2Annotation:
-    annotation.pairChangeRaw = remove_comma_before_connectors(annotation.pairChangeRaw)
-    annotation.pairChangeFinal = remove_comma_before_connectors(annotation.pairChangeFinal)
-    for subject in annotation.subjects:
-        subject.descQueryRaw = cleanup_desc_change_text(subject.descQueryRaw)
-        subject.descQueryFinal = cleanup_desc_change_text(subject.descQueryFinal)
-        subject.changeTargetRaw = cleanup_desc_change_text(subject.changeTargetRaw)
-        subject.changeTargetFinal = cleanup_desc_change_text(subject.changeTargetFinal)
-    return annotation
+    update: dict[str, Any] = {}
+    if isinstance(patch, dict):
+        texts = patch.get("select_texts")
+        if isinstance(texts, list) and len(texts) == len(annotation.select_texts):
+            cleaned = [cleanup_select_text(item) for item in texts]
+            if all(cleaned):
+                update["select_texts"] = cleaned
+        condition = cleanup_target_condition(patch.get("target_condition"))
+        if condition:
+            update["target_condition"] = condition
+    # Issues the patch already fixed are not blocking; only unresolved rejections are.
+    issues: list[str] = []
+    if review.get("approved") is False and not update:
+        issues = [str(item) for item in review.get("issues") or [] if str(item).strip()]
+        issues = issues or ["Reviewer did not approve but gave no details."]
+    return annotation.model_copy(update=update), issues

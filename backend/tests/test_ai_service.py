@@ -1,386 +1,175 @@
 import asyncio
-import json
 import io
+import json
 
-import httpx
 import pytest
 from PIL import Image
 
+from backend.app import ai_service
 from backend.app.ai_service import (
+    apply_generated_text,
     apply_review_patch,
-    cleanup_stage2_annotation,
-    coerce_annotation,
-    completion_content,
-    post_completion,
-    request_completion,
-    review_annotation,
+    generate_annotation,
+    initial_annotation,
 )
-from backend.app.models import RuntimeSettings, Stage2Annotation, SubjectAnnotation
-from backend.app.uit_client import UitClient
+from backend.app.images import render_for_model
+from backend.app.models import RuntimeSettings
+from backend.tests.fixtures import make_task
 
 
-def response_json(data: dict) -> httpx.Response:
-    return httpx.Response(200, content=json.dumps(data).encode("utf-8"))
+def settings(**overrides) -> RuntimeSettings:
+    values = {"openai_compat_api_key": "key", "ai_double_check_enabled": False}
+    return RuntimeSettings(**{**values, **overrides})
 
 
-def test_completion_content_reads_openai_choices() -> None:
-    response = response_json({"choices": [{"message": {"content": "hello"}}]})
-
-    assert completion_content(response) == "hello"
-
-
-def test_completion_content_reads_singular_choice() -> None:
-    response = response_json({"choice": {"message": {"content": "hello"}}})
-
-    assert completion_content(response) == "hello"
+def jpeg_bytes() -> bytes:
+    output = io.BytesIO()
+    Image.new("RGB", (200, 100), "white").save(output, format="JPEG")
+    return output.getvalue()
 
 
-def test_completion_content_reports_model_error() -> None:
-    response = response_json({"error": {"message": "bad model"}})
+def test_initial_annotation_uses_task_subjects() -> None:
+    result = initial_annotation(make_task("RELATIONAL"))
 
-    with pytest.raises(ValueError, match="bad model"):
-        completion_content(response)
-
-
-def test_completion_content_reports_missing_choices() -> None:
-    response = response_json({"id": "abc"})
-
-    with pytest.raises(ValueError, match="did not include choices"):
-        completion_content(response)
+    assert result.case_type == "RELATIONAL"
+    assert [item.identity_ids for item in result.subjects] == [["10"], ["20"]]
+    assert result.select_texts == ["", ""]
 
 
-def test_completion_content_reads_nested_gemini_response() -> None:
-    response = response_json({
-        "response": {
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {"text": "hello"},
-                            {"text": " world"},
-                        ]
-                    }
-                }
-            ]
-        }
-    })
+def test_initial_annotation_group_and_fallback_assignment() -> None:
+    task = make_task("INDIVIDUAL")
+    task["candidate_identity_ids"] = ["10", "20"]
+    task["initial_subjects"] = []
 
-    assert completion_content(response) == "hello world"
+    assert initial_annotation(task).case_type == "GROUP"
+    assert initial_annotation(make_task("GROUP")).subjects[0].identity_ids == ["10", "20"]
+    broken = make_task("DUAL")
+    broken["initial_subjects"] = []
+    with pytest.raises(ValueError, match="no initial subject assignment"):
+        initial_annotation(broken)
 
 
-def test_cleanup_stage2_annotation_removes_comma_before_connectors() -> None:
-    annotation = cleanup_stage2_annotation(
-        coerce_annotation(
-            {
-                "caseType": "SINGLE",
-                "subjects": [
-                    {
-                        "subjectId": 1,
-                        "queryGroupIds": ["1"],
-                        "descQueryFinal": "the man in a hat, and a blue shirt",
-                        "changeTargetFinal": "is sitting, and smiling",
-                    }
-                ],
-            }
-        )
-    )
+def test_apply_generated_text_cleans_and_pads() -> None:
+    base = initial_annotation(make_task("DUAL"))
 
-    subject = annotation.subjects[0]
-    assert ", and" not in subject.descQueryFinal
-    assert ", and" not in subject.changeTargetFinal
-
-
-def test_cleanup_stage2_annotation_removes_subject_from_desc_and_change() -> None:
-    annotation = cleanup_stage2_annotation(
-        coerce_annotation(
-            {
-                "caseType": "SINGLE",
-                "subjects": [
-                    {
-                        "subjectId": 1,
-                        "queryGroupIds": ["1"],
-                        "descQueryFinal": "Subject 1 refers to the woman in a yellow shirt",
-                        "changeTargetFinal": "Subject 1 is sitting on a bench",
-                    }
-                ],
-            }
-        )
-    )
-
-    subject = annotation.subjects[0]
-    assert subject.descQueryFinal == "the woman in a yellow shirt"
-    assert subject.changeTargetFinal == "is sitting on a bench"
-
-
-def test_apply_review_patch_merges_minimal_subject_changes() -> None:
-    annotation = Stage2Annotation(
-        caseType="SINGLE",
-        subjects=[
-            SubjectAnnotation(
-                subjectId=1,
-                queryGroupIds=["1"],
-                descQueryFinal="the person in blue",
-                changeTargetFinal="is walking",
-            )
-        ],
-    )
-
-    checked = apply_review_patch(
-        annotation,
+    result, concerns = apply_generated_text(
+        base,
         {
-            "approved": False,
-            "issues": ["DESC is too generic"],
-            "patch": {
-                "subjects": [
-                    {
-                        "subjectId": 1,
-                        "descQueryFinal": "Subject 1 refers to the woman in a blue jacket",
-                    }
-                ]
-            },
+            "select_texts": ["a man, and a hat."],
+            "target_condition": "then retrieve target images where Subject 1 sits, and Subject 2 stands.",
+            "subject_problem": "box 20 shows a different person",
         },
     )
 
-    subject = checked.subjects[0]
-    assert subject.queryGroupIds == ["1"]
-    assert subject.descQueryFinal == "the woman in a blue jacket"
-    assert subject.changeTargetFinal == "is walking"
-    assert checked.llmEdits[-1]["type"] == "double_check"
+    assert result.select_texts == ["a man and a hat", ""]
+    assert result.target_condition == "Subject 1 sits and Subject 2 stands"
+    assert concerns == ["Model flagged the subject boxes: box 20 shows a different person"]
+    assert [item.identity_ids for item in result.subjects] == [["10"], ["20"]]
 
 
-def test_review_annotation_uses_review_model(monkeypatch) -> None:
-    captured: dict[str, str] = {}
+def test_apply_review_patch_changes_only_text() -> None:
+    base = initial_annotation(make_task("DUAL")).model_copy(
+        update={"select_texts": ["a man", "a woman"], "target_condition": "Subject 1 sits and Subject 2 stands"}
+    )
 
-    async def fake_post_completion(
-        url: str,
-        api_key: str,
-        payload: dict,
-        timeout: float,
-    ) -> httpx.Response:
-        captured["url"] = url
-        captured["api_key"] = api_key
-        captured["model"] = payload["model"]
-        return response_json(
-            {
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {"approved": True, "issues": [], "patch": {}}
-                            )
-                        }
-                    }
-                ]
-            }
+    patched, issues = apply_review_patch(
+        base,
+        {
+            "approved": False,
+            "issues": ["wrong action"],
+            "patch": {"target_condition": "Subject 1 stands and Subject 2 sits", "case_type": "RELATIONAL"},
+        },
+    )
+    rejected, rejected_issues = apply_review_patch(base, {"approved": False, "issues": ["bad"], "patch": {}})
+    wrong_size, _ = apply_review_patch(base, {"patch": {"select_texts": ["only one"]}})
+
+    assert patched.target_condition == "Subject 1 stands and Subject 2 sits"
+    assert patched.case_type == "DUAL"
+    assert issues == []
+    assert rejected == base and rejected_issues == ["bad"]
+    assert wrong_size.select_texts == ["a man", "a woman"]
+
+
+def test_render_for_model_returns_resized_jpeg_data_url() -> None:
+    data_url = render_for_model(
+        jpeg_bytes(), [{"identity_id": "10", "x": 0.1, "y": 0.1, "width": 0.3, "height": 0.5}], {"10": 1}, max_side=64
+    )
+
+    assert data_url.startswith("data:image/jpeg;base64,")
+
+
+def test_generate_annotation_uses_configured_model_and_labels_boxes(monkeypatch) -> None:
+    payloads: list[dict] = []
+
+    async def fake_load(sample_id: str, side: str) -> bytes:
+        return jpeg_bytes()
+
+    async def fake_completion(url: str, api_key: str, payload: dict, timeout: float) -> str:
+        payloads.append(payload)
+        return json.dumps(
+            {"select_texts": ["the man in red"], "target_condition": "Subject 1 is sitting", "subject_problem": None}
         )
 
-    monkeypatch.setattr("backend.app.ai_service.post_completion", fake_post_completion)
-    annotation = Stage2Annotation(
-        caseType="SINGLE",
-        subjects=[
-            SubjectAnnotation(
-                subjectId=1,
-                queryGroupIds=["1"],
-                descQueryFinal="the woman in a blue jacket",
-                changeTargetFinal="is walking",
-            )
-        ],
-    )
-    settings = RuntimeSettings(
-        openai_compat_base_url="https://example.test/v1",
-        openai_compat_api_key="test-key",
-        openai_compat_model="small-model",
-        openai_compat_review_model="ag/gemini-pro-agent",
-    )
+    monkeypatch.setattr(ai_service, "load_image_bytes", fake_load)
+    monkeypatch.setattr(ai_service, "request_completion", fake_completion)
 
-    checked = asyncio.run(review_annotation({"images": []}, annotation, settings))
+    result = asyncio.run(generate_annotation(make_task("INDIVIDUAL"), settings(openai_compat_model="ag/gemini-3.8-flash-high")))
 
-    assert captured == {
-        "url": "https://example.test/v1/chat/completions",
-        "api_key": "test-key",
-        "model": "ag/gemini-pro-agent",
-    }
-    assert checked.llmEdits[-1]["approved"] is True
+    assert result.annotation.select_texts == ["the man in red"]
+    assert result.annotation.target_condition == "Subject 1 is sitting"
+    assert result.concerns == []
+    assert payloads[0]["model"] == "ag/gemini-3.8-flash-high"
+    user_content = payloads[0]["messages"][1]["content"]
+    assert sum(1 for part in user_content if part["type"] == "image_url") == 4
 
 
-def test_post_completion_retries_transient_status_with_backoff(monkeypatch) -> None:
-    calls: list[str] = []
-    sleeps: list[float] = []
+def test_generate_annotation_retries_with_blurred_images_when_model_returns_nothing(monkeypatch) -> None:
+    calls: list[int] = []
 
-    class FakeClient:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
+    async def fake_load(sample_id: str, side: str) -> bytes:
+        return jpeg_bytes()
 
-        async def __aenter__(self):
-            return self
+    async def fake_completion(url: str, api_key: str, payload: dict, timeout: float) -> str:
+        calls.append(sum(1 for part in payload["messages"][1]["content"] if part["type"] == "image_url"))
+        if len(calls) == 1:
+            raise ValueError("Model API returned no text output.")
+        return json.dumps({"select_texts": ["a man"], "target_condition": "Subject 1 sits"})
 
-        async def __aexit__(self, exc_type, exc, traceback) -> None:
-            return None
+    monkeypatch.setattr(ai_service, "load_image_bytes", fake_load)
+    monkeypatch.setattr(ai_service, "request_completion", fake_completion)
 
-        async def post(self, url: str, headers: dict, json: dict) -> httpx.Response:
-            calls.append(url)
-            request = httpx.Request("POST", url)
-            if len(calls) == 1:
-                return httpx.Response(
-                    429,
-                    headers={"retry-after": "0.25"},
-                    request=request,
-                )
-            return httpx.Response(
-                200,
-                content=b'{"choices":[{"message":{"content":"ok"}}]}',
-                request=request,
-            )
+    result = asyncio.run(generate_annotation(make_task("INDIVIDUAL"), settings()))
 
-    async def fake_sleep(delay: float) -> None:
-        sleeps.append(delay)
-
-    monkeypatch.setattr("backend.app.ai_service.httpx.AsyncClient", FakeClient)
-    monkeypatch.setattr("backend.app.ai_service.asyncio.sleep", fake_sleep)
-
-    response = asyncio.run(
-        post_completion(
-            "https://example.test/v1/chat/completions",
-            "test-key",
-            {"model": "review-model"},
-            30.0,
-        )
-    )
-
-    assert response.status_code == 200
-    assert len(calls) == 2
-    assert sleeps == [0.25]
+    assert calls == [4, 2]
+    assert result.annotation.select_texts == ["a man"]
 
 
-def test_post_completion_retries_transport_error(monkeypatch) -> None:
-    calls: list[str] = []
-    sleeps: list[float] = []
+def test_generate_annotation_requires_api_key() -> None:
+    with pytest.raises(ValueError, match="API key"):
+        asyncio.run(generate_annotation(make_task(), RuntimeSettings()))
 
-    class FakeClient:
-        def __init__(self, *args, **kwargs) -> None:
-            pass
 
-        async def __aenter__(self):
-            return self
+def test_double_check_uses_review_model_and_reports_rejection(monkeypatch) -> None:
+    models: list[str] = []
 
-        async def __aexit__(self, exc_type, exc, traceback) -> None:
-            return None
+    async def fake_load(sample_id: str, side: str) -> bytes:
+        return jpeg_bytes()
 
-        async def post(self, url: str, headers: dict, json: dict) -> httpx.Response:
-            calls.append(url)
-            request = httpx.Request("POST", url)
-            if len(calls) == 1:
-                raise httpx.ReadTimeout("slow network", request=request)
-            return httpx.Response(
-                200,
-                content=b'{"choices":[{"message":{"content":"ok"}}]}',
-                request=request,
-            )
+    async def fake_completion(url: str, api_key: str, payload: dict, timeout: float) -> str:
+        models.append(payload["model"])
+        if len(models) == 1:
+            return json.dumps({"select_texts": ["a man"], "target_condition": "Subject 1 sits"})
+        return json.dumps({"approved": False, "issues": ["target shows standing"], "patch": {}})
 
-    async def fake_sleep(delay: float) -> None:
-        sleeps.append(delay)
+    monkeypatch.setattr(ai_service, "load_image_bytes", fake_load)
+    monkeypatch.setattr(ai_service, "request_completion", fake_completion)
 
-    monkeypatch.setattr("backend.app.ai_service.httpx.AsyncClient", FakeClient)
-    monkeypatch.setattr("backend.app.ai_service.asyncio.sleep", fake_sleep)
-
-    response = asyncio.run(
-        post_completion(
-            "https://example.test/v1/chat/completions",
-            "test-key",
-            {"model": "review-model"},
-            30.0,
+    result = asyncio.run(
+        generate_annotation(
+            make_task(),
+            settings(ai_double_check_enabled=True, openai_compat_model="gen", openai_compat_review_model="rev"),
         )
     )
 
-    assert response.status_code == 200
-    assert len(calls) == 2
-    assert sleeps == [2.0]
-
-
-def test_request_completion_retries_empty_model_output(monkeypatch) -> None:
-    calls: list[dict] = []
-    sleeps: list[float] = []
-    empty_response = {
-        "response": {
-            "usageMetadata": {
-                "promptTokenCount": 1450,
-                "totalTokenCount": 1450,
-            }
-        }
-    }
-
-    async def fake_post_completion(
-        url: str,
-        api_key: str,
-        payload: dict,
-        timeout: float,
-    ) -> httpx.Response:
-        calls.append(payload)
-        if len(calls) < 3:
-            return response_json(empty_response)
-        return response_json({"choices": [{"message": {"content": "ok"}}]})
-
-    async def fake_sleep(delay: float) -> None:
-        sleeps.append(delay)
-
-    monkeypatch.setattr("backend.app.ai_service.post_completion", fake_post_completion)
-    monkeypatch.setattr("backend.app.ai_service.asyncio.sleep", fake_sleep)
-
-    content = asyncio.run(
-        request_completion(
-            "https://example.test/v1/chat/completions",
-            "test-key",
-            {
-                "model": "gemini-3-flash",
-                "messages": [
-                    {"role": "system", "content": "system rules"},
-                    {"role": "user", "content": "task"},
-                ],
-                "max_tokens": 4096,
-            },
-            30.0,
-        )
-    )
-
-    assert content == "ok"
-    assert len(calls) == 3
-    assert calls[1]["messages"][0]["role"] == "user"
-    assert sleeps == [2.0]
-
-
-def test_completion_content_reports_nested_empty_response() -> None:
-    response = response_json({
-        "response": {
-            "usageMetadata": {
-                "promptTokenCount": 1450,
-                "totalTokenCount": 1450,
-            }
-        }
-    })
-
-    with pytest.raises(ValueError, match="no text output"):
-        completion_content(response)
-
-
-def test_box_coords_supports_normalized_boxes() -> None:
-    assert UitClient._box_coords(
-        {"x": 0.25, "y": 0.1, "width": 0.5, "height": 0.4},
-        200,
-        100,
-    ) == (50, 10, 150, 50)
-
-
-def test_prepare_image_draws_boxes() -> None:
-    source = Image.new("RGB", (100, 100), "white")
-    buffer = io.BytesIO()
-    source.save(buffer, format="PNG")
-
-    output = UitClient._prepare_image(
-        buffer.getvalue(),
-        max_side=100,
-        quality=95,
-        boxes=[{"id": "A", "x": 0.1, "y": 0.1, "width": 0.4, "height": 0.4}],
-    )
-
-    with Image.open(io.BytesIO(output)) as image:
-        assert image.convert("RGB").getpixel((10, 10)) != (255, 255, 255)
+    assert models == ["gen", "rev"]
+    assert result.concerns == ["target shows standing"]
