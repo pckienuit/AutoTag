@@ -28,8 +28,8 @@ The final instruction is built like this, so your text must read naturally insid
 Case rules:
 - INDIVIDUAL: one person. select_texts has 1 text. target_condition describes Subject 1, for example "Subject 1 is holding a diploma".
 - GROUP: Subject 1 is a group of several people. select_texts has 1 text that identifies the whole group, for example "the group consisting of the man in black and the woman in white". target_condition uses plural grammar and names Subject 1, for example "the members of Subject 1 are standing together on the stage".
-- DUAL: two subjects with independent changes. select_texts has 2 texts. target_condition states the change of both in one sentence, for example "Subject 1 is holding a diploma and Subject 2 is clapping".
-- RELATIONAL: two subjects with a directed relation. select_texts has 2 texts. target_condition states who does what to whom, in the right order, for example "Subject 1 is presenting a diploma to Subject 2". The direction must match the assignment of Subject 1 and Subject 2.
+- DUAL: two subjects with independent detailed predicates. select_texts has 2 texts. Describe a visible action, clothing, pose or object for EACH subject independently; no ordered intersubject relationship as the defining condition. For example "Subject 1 is holding a diploma and Subject 2 is clapping in a blue shirt". Do not use "Subject 1 is holding Subject 2" as a DUAL condition. Incidental proximity is allowed when both subjects have independent detailed predicates.
+- RELATIONAL: two subjects with a directed relation. select_texts has 2 texts. target_condition states who does what to whom, in the right order, for example "Subject 1 is presenting a diploma to Subject 2". The direction must match the assignment of Subject 1 and Subject 2. Apply the swap test to the RELATION itself: swapping S1 and S2 changes its truth in this image. Symmetric next to, near, beside, together, or mutual facing alone is insufficient even if unrelated clothing/actions differ. "Subject 1 is holding Subject 2 next to a large animal statue" IS directed and valid; never reject just because next to occurs. If no directed action is visible, a clearly supported image-plane left/right relation is allowed. Preserve all supported clothing, action, object and background details; minimally patch the relation, never strip a detailed sentence to bare left/right.
 
 Hard rules:
 - select_texts never contain the words "Subject", "Subject 1" or "Subject 2". They are plain descriptions such as "the man in a dark suit standing on the left".
@@ -41,7 +41,7 @@ Hard rules:
 - target_condition: describe the visible action, pose, clothing, or position of the subject(s) in the TARGET image. Name the concrete place or object when it helps, for example "standing in front of a memorial wall".
 - Do not stack fragments without connectors, such as "is wearing blue jeans not wearing a hat". Use "and" or "with". Avoid commas before "and" or "or".
 - Do not leave unfinished fragments such as "holding a", "with a", or "standing near".
-- For left/right of the body or looking direction, use the subject's own left/right. If unsure, use neutral words such as "one hand".
+- For image-plane positions between subjects, left/right means the viewer's left/right, not anatomical left/right. For left/right of the body or looking direction, use the subject's own left/right. If unsure, use neutral words such as "one hand".
 - Vary the wording a little when the images allow it, so different tasks do not all sound the same.
 
 If a box does not match the person it should mark (for example the box in one image clearly shows a different person), still write your best text and put a short reason in "subject_problem". Otherwise "subject_problem" must be null.
@@ -61,11 +61,13 @@ Check these points:
 3. No hidden facts (emotions, jobs, relationships, names), no unfinished fragments, no wrong grammar after "Subject 1" or "Subject 2".
 4. select_texts do not contain the word "Subject"; target_condition mentions Subject 1 (and Subject 2 for DUAL and RELATIONAL).
 5. Simple English, no stacked fragments, no needless commas.
+6. DUAL: verify independent detailed predicates for BOTH subjects, with no ordered intersubject relation defining the condition. RELATIONAL: apply the swap test to the intersubject relation, not unrelated attributes; symmetric proximity alone fails. Holding Subject 2 next to a statue passes. Verify positions from actual images with the given identity assignment.
+7. Retain all image-supported details and patch only the incorrect relation or unsupported detail. Do not replace detailed conditions with bare left/right.
 
 Return only this JSON:
 {"approved": true, "issues": ["short concrete issue"], "patch": {"select_texts": ["..."], "target_condition": "..."}}
 
-Use an empty patch {} when the annotation is already good. Patch only fields that are clearly wrong; when you patch select_texts, return all of them. Prefer leaving a field unchanged over guessing.
+Set approved=true only if the resulting annotation (including your patch) meets every rule and is supported by the images; otherwise approved=false and list unresolved issues. Use an empty patch {} when the annotation is already good. Patch only fields that are clearly wrong; when you patch select_texts, return all of them. Prefer leaving a field unchanged over guessing.
 """.strip()
 
 
@@ -249,9 +251,9 @@ def apply_review_patch(annotation: RcrAnnotation, review: dict[str, Any]) -> tup
         condition = cleanup_target_condition(patch.get("target_condition"))
         if condition:
             update["target_condition"] = condition
-    # Issues the patch already fixed are not blocking; only unresolved rejections are.
+    # A partial patch does not prove every rejection was resolved. Fail closed.
     issues: list[str] = []
-    if review.get("approved") is False and not update:
+    if review.get("approved") is not True:
         issues = [str(item) for item in review.get("issues") or [] if str(item).strip()]
         issues = issues or ["Reviewer did not approve but gave no details."]
     return annotation.replace(**update), issues

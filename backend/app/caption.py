@@ -86,7 +86,40 @@ def validate_annotation(
             issues.append("Target condition must mention Subject 2.")
         if not two and "2" in labels:
             issues.append("Target condition must not mention Subject 2.")
+    if two and target:
+        issues.extend(case_semantic_issues(annotation.case_type, target))
     return issues
+
+
+def case_semantic_issues(case_type: str, target: str) -> list[str]:
+    """Conservative text guard; visual/semantic review is still required.
+
+    Match ordered predicates attached to explicit subjects, not arbitrary words
+    such as 'holding a baby' or a third person's action later in the sentence.
+    This is not a complete English parser and must not claim visual truth.
+    """
+    text = target.lower()
+    directed = False
+    symmetric = False
+    for actor, other in (("1", "2"), ("2", "1")):
+        for match in re.finditer(r"subject\s+" + actor + r"\b(.*?)(?=subject\s+[12]\b|$)", text):
+            predicate = match.group(1)
+            rest = text[match.end():]
+            if not re.match(r"subject\s+" + other + r"\b", rest):
+                continue
+            # Do not attribute a third party's action to the preceding subject.
+            predicate = re.split(r"\b(?:while|when)\s+(?:a|an|the)\b", predicate)[0]
+            if re.search(r"(?:next to|near|beside|alongside)\s*$", predicate):
+                symmetric = True
+            if re.search(r"(?:holding|holds|carrying|carries|feeding|feeds|following|follows|behind|in front of|to the left of|to the right of|left of|right of)\s*$", predicate):
+                directed = True
+            if re.search(r"(?:handing|giving|presenting|offering|feeding|pointing|looking|resting|leaning|reaching).*?(?:to|at|against|toward|towards|on)\s*$", predicate):
+                directed = True
+    if case_type == "RELATIONAL" and symmetric and not directed:
+        return ["RELATIONAL needs a directed Subject 1-to-Subject 2 relation whose truth changes when subjects are swapped; next to/near/beside alone is insufficient."]
+    if case_type == "DUAL" and directed:
+        return ["DUAL needs independent detailed predicates for each subject, not an ordered intersubject relationship as its defining condition."]
+    return []
 
 
 def text_issues(value: str, label: str) -> list[str]:

@@ -107,3 +107,40 @@ def test_cleanup_keeps_subject_labels_in_target() -> None:
     assert cleanup_target_condition("Subject 1 is sitting, and Subject 2 is standing.") == (
         "Subject 1 is sitting and Subject 2 is standing"
     )
+
+
+def two_subject(case_type: str, condition: str) -> list[str]:
+    return validate_annotation(annotation(case_type, ["a man", "a woman"], condition), ["1", "2"])
+
+
+RELATIONAL_SYMMETRIC = (
+    "RELATIONAL needs a directed Subject 1-to-Subject 2 relation whose truth changes when subjects are swapped; "
+    "next to/near/beside alone is insufficient."
+)
+DUAL_DIRECTED = (
+    "DUAL needs independent detailed predicates for each subject, "
+    "not an ordered intersubject relationship as its defining condition."
+)
+
+
+def test_relational_rejects_symmetric_proximity_only() -> None:
+    assert two_subject("RELATIONAL", "Subject 1 is sitting next to Subject 2 at a counter") == [RELATIONAL_SYMMETRIC]
+    assert two_subject("RELATIONAL", "Subject 1 is standing beside Subject 2") == [RELATIONAL_SYMMETRIC]
+
+
+def test_relational_accepts_directed_relations() -> None:
+    assert two_subject("RELATIONAL", "Subject 1 is presenting a diploma to Subject 2") == []
+    assert two_subject("RELATIONAL", "Subject 1 is holding Subject 2 next to a large statue") == []
+    assert two_subject("RELATIONAL", "Subject 1 is standing behind Subject 2") == []
+
+
+def test_dual_rejects_ordered_relation_but_accepts_independent_predicates() -> None:
+    assert two_subject("DUAL", "Subject 1 is holding Subject 2") == [DUAL_DIRECTED]
+    assert two_subject("DUAL", "Subject 1 is holding a diploma and Subject 2 is clapping") == []
+    assert two_subject("DUAL", "Subject 1 is wearing a hat and Subject 2 is sitting next to a woman") == []
+
+
+def test_semantic_guard_only_applies_to_two_subject_cases() -> None:
+    result = validate_annotation(annotation("INDIVIDUAL", ["a man"], "Subject 1 is holding a bag"), ["1"])
+
+    assert result == []

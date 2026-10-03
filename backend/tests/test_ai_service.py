@@ -67,25 +67,25 @@ def test_apply_generated_text_cleans_and_pads() -> None:
     assert [item.identity_ids for item in result.subjects] == [["10"], ["20"]]
 
 
-def test_apply_review_patch_changes_only_text() -> None:
-    base = initial_annotation(make_task("DUAL")).replace(**{"select_texts": ["a man", "a woman"], "target_condition": "Subject 1 sits and Subject 2 stands"}
+def test_apply_review_patch_changes_only_text_and_fails_closed() -> None:
+    base = initial_annotation(make_task("DUAL")).replace(
+        select_texts=["a man", "a woman"], target_condition="Subject 1 sits and Subject 2 stands"
     )
+    patch = {"target_condition": "Subject 1 stands and Subject 2 sits", "case_type": "RELATIONAL"}
 
-    patched, issues = apply_review_patch(
-        base,
-        {
-            "approved": False,
-            "issues": ["wrong action"],
-            "patch": {"target_condition": "Subject 1 stands and Subject 2 sits", "case_type": "RELATIONAL"},
-        },
-    )
+    approved, approved_issues = apply_review_patch(base, {"approved": True, "issues": ["minor"], "patch": patch})
+    # A patch alone does not prove every rejection was resolved, so the task still needs a human.
+    patched, patched_issues = apply_review_patch(base, {"approved": False, "issues": ["wrong action"], "patch": patch})
     rejected, rejected_issues = apply_review_patch(base, {"approved": False, "issues": ["bad"], "patch": {}})
-    wrong_size, _ = apply_review_patch(base, {"patch": {"select_texts": ["only one"]}})
+    silent, silent_issues = apply_review_patch(base, {"patch": {}})
+    wrong_size, _ = apply_review_patch(base, {"approved": True, "patch": {"select_texts": ["only one"]}})
 
-    assert patched.target_condition == "Subject 1 stands and Subject 2 sits"
-    assert patched.case_type == "DUAL"
-    assert issues == []
+    assert approved.target_condition == patched.target_condition == "Subject 1 stands and Subject 2 sits"
+    assert approved.case_type == "DUAL"  # the reviewer can never change the case
+    assert approved_issues == []
+    assert patched_issues == ["wrong action"]
     assert rejected == base and rejected_issues == ["bad"]
+    assert silent == base and silent_issues == ["Reviewer did not approve but gave no details."]
     assert wrong_size.select_texts == ["a man", "a woman"]
 
 
